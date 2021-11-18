@@ -1,0 +1,30 @@
+{
+  "name": "oraclex",
+  "version": "0.1.0",
+  "description": "Oracle",
+  "main": "./lib/index.js",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build:lib": "tsc",
+    "clean:lib": "rimraf lib"
+  },
+  "dependencies": {
+    "oracledb": "^5.2.0"
+  },
+  "devDependencies": {
+    "@types/oracledb": "^5.2.1",
+    "tslint": "5.10.0",
+    "typescript": "^3.3.3333"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@github.com/core-ts/oracle"
+  },
+  "keywords": [
+    "oracle",
+    "oracle extension"
+  ]
+}
