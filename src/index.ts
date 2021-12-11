@@ -15,6 +15,7 @@ export class resource {
 
 export class OracleManager implements Manager {
   constructor(public conn: Connection) {
+    this.param = this.param.bind(this);
     this.exec = this.exec.bind(this);
     this.execBatch = this.execBatch.bind(this);
     this.query = this.query.bind(this);
@@ -22,9 +23,13 @@ export class OracleManager implements Manager {
     this.execScalar = this.execScalar.bind(this);
     this.count = this.count.bind(this);
   }
+  driver = 'oracle';
+  param(i: number): string {
+    return ':' + i;
+  }
   exec(sql: string, args?: any[], ctx?: any): Promise<number> {
     const p = (ctx ? ctx : this.conn);
-    return exec(this.conn, sql, args);
+    return exec(p, sql, args);
   }
   execBatch(statements: Statement[], firstSuccess?: boolean, ctx?: any): Promise<number> {
     const p = (ctx ? ctx : this.conn);
