@@ -1,6 +1,7 @@
 export interface StringMap {
   [key: string]: string;
 }
+
 export interface Statement {
   query: string;
   params?: any[];
@@ -13,9 +14,10 @@ export interface Manager {
   execBatch(statements: Statement[], firstSuccess?: boolean, ctx?: any): Promise<number>;
   query<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T[]>;
   queryOne<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T|null>;
-  execScalar<T>(sql: string, args?: any[], ctx?: any): Promise<T>;
+  execScalar<T>(sql: string, args?: any[], ctx?: any): Promise<T | null>;
   count(sql: string, args?: any[], ctx?: any): Promise<number>;
 }
+
 export interface DB {
   driver: string;
   param(i: number): string;
@@ -43,6 +45,7 @@ export interface Model {
   model?: any;
   schema?: any;
 }
+
 export interface Attribute {
   name?: string;
   field?: string;
@@ -77,6 +80,7 @@ export interface Attribute {
   true?: string|number;
   false?: string|number;
 }
+
 export interface Attributes {
   [key: string]: Attribute;
 }
