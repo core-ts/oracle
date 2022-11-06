@@ -33,7 +33,7 @@ export class OracleChecker implements HealthChecker {
         resolve(obj);
       });
     });
-    
+
     return this.timeout > 0 ? promiseTimeOut(this.timeout, promise) : promise;
   }
 

@@ -1,6 +1,6 @@
 {
-  "name": "oraclex",
-  "version": "0.1.1",
+  "name": "oracle-core",
+  "version": "0.1.5",
   "description": "Oracle",
   "main": "./lib/index.js",
   "types": "./src/index.ts",
@@ -25,6 +25,8 @@
   },
   "keywords": [
     "oracle",
-    "oracle extension"
+    "oracle extension",
+    "oracle core",
+    "oracle-core"
   ]
 }

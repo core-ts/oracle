@@ -13,7 +13,7 @@ export interface Manager {
   exec(sql: string, args?: any[], ctx?: any): Promise<number>;
   execBatch(statements: Statement[], firstSuccess?: boolean, ctx?: any): Promise<number>;
   query<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T[]>;
-  queryOne<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T|null>;
+  queryOne<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T | null>;
   execScalar<T>(sql: string, args?: any[], ctx?: any): Promise<T | null>;
   count(sql: string, args?: any[], ctx?: any): Promise<number>;
 }
@@ -24,7 +24,7 @@ export interface DB {
   exec(sql: string, args?: any[], ctx?: any): Promise<number>;
   execBatch(statements: Statement[], firstSuccess?: boolean, ctx?: any): Promise<number>;
   query<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T[]>;
-  queryOne<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T|null>;
+  queryOne<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T | null>;
   execScalar<T>(sql: string, args?: any[], ctx?: any): Promise<T>;
   count(sql: string, args?: any[], ctx?: any): Promise<number>;
 }
@@ -54,7 +54,7 @@ export interface Attribute {
   format?: FormatType;
   required?: boolean;
   match?: MatchType;
-  default?: string|number|Date|boolean;
+  default?: string | number | Date | boolean;
   key?: boolean;
   unique?: boolean;
   enum?: string[] | number[];
@@ -77,8 +77,8 @@ export interface Attribute {
   jsonField?: string;
   link?: string;
   typeof?: Attributes;
-  true?: string|number;
-  false?: string|number;
+  true?: string | number;
+  false?: string | number;
 }
 
 export interface Attributes {
