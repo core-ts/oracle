@@ -1,6 +1,6 @@
 {
   "name": "oracle-core",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "Oracle",
   "main": "./lib/index.js",
   "types": "./src/index.ts",
@@ -9,11 +9,10 @@
     "clean:lib": "rimraf lib"
   },
   "dependencies": {
-    "oracledb": "^5.2.0"
+    "oracledb": "^7.0.0"
   },
   "devDependencies": {
-    "@types/oracledb": "^5.2.1",
-    "tslint": "5.10.0",
+    "@types/oracledb": "^7.0.0",
     "typescript": "^3.3.3333"
   },
   "publishConfig": {

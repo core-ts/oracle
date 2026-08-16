@@ -1,4 +1,4 @@
-import { Connection } from 'oracledb';
+import type { Pool } from 'oracledb';
 
 export interface AnyMap {
   [key: string]: any;
@@ -11,50 +11,50 @@ export interface HealthChecker {
 }
 
 export class OracleChecker implements HealthChecker {
-  timeout: number;
-  service: string;
+  private static readonly TIMEOUT = 4500;
 
-  constructor(private client: Connection, service?: string, timeout?: number) {
-    this.timeout = (timeout ? timeout : 4200);
-    this.service = (service ? service : 'oracle');
-    this.check = this.check.bind(this);
-    this.name = this.name.bind(this);
-    this.build = this.build.bind(this);
+  constructor(
+    private readonly pool: Pool,
+    private readonly checkerName = 'oracle',
+  ) {}
+
+  name(): string {
+    return this.checkerName;
   }
 
-  check(): Promise<AnyMap> {
-    const obj = {} as AnyMap;
-    const promise = new Promise<any>((resolve, reject) => {
-      this.client.ping((err) => {
-        if (err) {
-          return reject(err);
+  build(data: AnyMap, error: any): AnyMap {
+    return {
+      name: this.name(),
+      status: 'DOWN',
+      ...data,
+      error: error?.message ?? error,
+    };
+  }
+
+  async check(): Promise<AnyMap> {
+    let connection;
+
+    try {
+      connection = await this.pool.getConnection();
+
+      connection.callTimeout = OracleChecker.TIMEOUT;
+
+      await connection.execute('SELECT 1 FROM DUAL');
+
+      return {
+        name: this.name(),
+        status: 'UP',
+      };
+    } catch (error) {
+      return this.build({}, error);
+    } finally {
+      if (connection) {
+        try {
+          await connection.close();
+        } catch {
+          // Ignore connection release errors.
         }
-
-        resolve(obj);
-      });
-    });
-
-    return this.timeout > 0 ? promiseTimeOut(this.timeout, promise) : promise;
-  }
-
-  name = (): string => this.service;
-
-  build(data: AnyMap, err: any): AnyMap {
-    if (err) {
-      if (!data) {
-        data = {} as AnyMap;
       }
-
-      data['error'] = err;
     }
-
-    return data;
   }
-}
-
-function promiseTimeOut(timeoutInMilliseconds: number, promise: Promise<any>): Promise<any> {
-  return Promise.race([
-    promise,
-    new Promise((resolve, reject) => setTimeout(() => reject(`Timed out in: ${timeoutInMilliseconds} milliseconds!`), timeoutInMilliseconds))
-  ]);
 }

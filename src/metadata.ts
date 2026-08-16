@@ -10,29 +10,26 @@ export interface Statement {
 export interface Manager {
   driver: string;
   param(i: number): string;
-  exec(sql: string, args?: any[], ctx?: any): Promise<number>;
-  execBatch(statements: Statement[], firstSuccess?: boolean, ctx?: any): Promise<number>;
+  execute(sql: string, args?: any[], ctx?: any): Promise<number>;
+  executeBatch(statements: Statement[], firstSuccess?: boolean, ctx?: any): Promise<number>;
   query<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T[]>;
   queryOne<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T | null>;
-  execScalar<T>(sql: string, args?: any[], ctx?: any): Promise<T | null>;
+  executeScalar<T>(sql: string, args?: any[], ctx?: any): Promise<T | null>;
   count(sql: string, args?: any[], ctx?: any): Promise<number>;
 }
 
 export interface DB {
   driver: string;
   param(i: number): string;
-  exec(sql: string, args?: any[], ctx?: any): Promise<number>;
-  execBatch(statements: Statement[], firstSuccess?: boolean, ctx?: any): Promise<number>;
+  execute(sql: string, args?: any[], ctx?: any): Promise<number>;
+  executeBatch(statements: Statement[], firstSuccess?: boolean, ctx?: any): Promise<number>;
   query<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T[]>;
   queryOne<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T | null>;
-  execScalar<T>(sql: string, args?: any[], ctx?: any): Promise<T>;
+  executeScalar<T>(sql: string, args?: any[], ctx?: any): Promise<T | null>;
   count(sql: string, args?: any[], ctx?: any): Promise<number>;
 }
 
-export type DataType = 'ObjectId' | 'date' | 'datetime' | 'time'
-  | 'boolean' | 'number' | 'integer' | 'string' | 'text'
-  | 'object' | 'array' | 'binary'
-  | 'primitives' | 'booleans' | 'numbers' | 'integers' | 'strings' | 'dates' | 'datetimes' | 'times';
+export type DataType = 'ObjectId' | 'date' | 'datetime' | 'time' | 'boolean' | 'number' | 'integer' | 'string' | 'text' | 'object' | 'array' | 'binary' | 'primitives' | 'booleans' | 'numbers' | 'integers' | 'strings' | 'dates' | 'datetimes' | 'times';
 export type FormatType = 'currency' | 'percentage' | 'email' | 'url' | 'phone' | 'fax' | 'ipv4' | 'ipv6';
 export type MatchType = 'equal' | 'prefix' | 'contain' | 'max' | 'min'; // contain: default for string, min: default for Date, number
 
