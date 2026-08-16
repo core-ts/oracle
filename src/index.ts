@@ -572,42 +572,66 @@ export class OracleBatchWriter<T> {
 // tslint:disable-next-line:max-classes-per-file
 export class Exporter<T> {
   constructor(
-    public connection: Connection,
-    public attributes: Attributes,
-    public buildQuery: (ctx?: any) => Promise<Statement>,
-    public format: (row: T) => string,
-    public write: (chunk: string) => boolean,
-    public end: (cb?: () => void) => void,
-  ) {}
+    protected connection: Connection,
+    protected filename: string,
+    protected attributes: Attributes,
+    protected buildQuery: (ctx?: any) => Promise<Statement>,
+    protected format: (row: T) => string,
+    protected write: (chunk: string) => boolean,
+    protected end: (cb?: () => void) => void,
+    protected logInfo?: (msg: string, m?: SimpleMap) => void,
+    protected progressSize: number = 10000,
+    protected isClose: boolean = true,
+  ) {
+    this.export = this.export.bind(this)
+  }
   async export(ctx?: any): Promise<number> {
-    const idx = -1
     const stmt = await this.buildQuery(ctx)
     const stream = this.connection.queryStream(stmt.query, stmt.params || {})
-    let metaData: [{ name: string }]
-    // access metadata of query (IF NEED)
-    stream.on("metadata", (metadata: any) => (metaData = metadata))
-    // handle data row...
-    stream.on("data", (row: any[]) => {
-      const obj = convertToObject(row, metaData, this.attributes)
-      // this.write(this.format(obj as any))
-      const exportStr = this.format(obj as any)
-      this.write(exportStr)
-    })
-    // handle any error if occurred
-    stream.on("error", async (error: any) => {
-      console.error(error)
-      await closeConnection(this.connection)
-    })
+    if (this.isClose) {
+      // handle any error if occurred
+      stream.on("error", async (error: any) => {
+        console.error(error)
+        await closeConnection(this.connection)
+      })
+    }
     // all data has been fetched ...
     // the stream should be closed when it has been finished
     stream.on("end", () => {
       stream.destroy()
       this.end()
     })
-    // can now close connection...  (Note: do not close connections on 'end')
-    stream.on("close", async () => await closeConnection(this.connection))
-    return idx
+    if (this.isClose) {
+      // can now close connection...  (Note: do not close connections on 'end')
+      stream.on("close", async () => await closeConnection(this.connection))
+    }
+    let metaData: [{ name: string }]
+    // access metadata of query (IF NEED)
+    stream.on("metadata", (metadata: any) => (metaData = metadata))
+    let i = 0
+    let j = 0
+    // handle data row...
+    stream.on("data", (row: any[]) => {
+      i++
+      j++
+      const obj = convertToObject(row, metaData, this.attributes)
+      // this.write(this.format(obj as any))
+      const exportStr = this.format(obj as any)
+      this.write(exportStr)
+      if (j >= this.progressSize) {
+        console.log(`Progress: ${i} records processed of file '${this.filename}' ${exportStr}`)
+        if (this.logInfo) {
+          console.log("Enter log info")
+          this.logInfo(`Progress: ${i} records processed of file '${this.filename}' ${exportStr}`)
+        }
+        j = 0
+      }
+    })
+    return i
   }
+}
+export interface SimpleMap {
+  [key: string]: string | number | boolean | Date
 }
 export interface FileWriter {
   write(chunk: string): boolean
@@ -618,36 +642,37 @@ export interface Formatter<T> {
   format: (row: T) => string
 }
 export interface QueryBuilder {
-  build(cxt?: any): Promise<Statement>
+  build(ctx?: any): Promise<Statement>
 }
 // tslint:disable-next-line:max-classes-per-file
 export class ExportService<T> {
   constructor(
-    public connection: Connection,
-    public attributes: Attributes,
-    public queryBuilder: QueryBuilder,
-    public formatter: Formatter<T>,
-    public writer: FileWriter,
-  ) {}
+    protected connection: Connection,
+    protected filename: string,
+    protected attributes: Attributes,
+    protected queryBuilder: QueryBuilder,
+    protected formatter: Formatter<T>,
+    protected writer: FileWriter,
+    protected logInfo?: (msg: string, m?: SimpleMap) => void,
+    protected progressSize: number = 10000,
+    protected isClose: boolean = true,
+  ) {
+    this.export = this.export.bind(this)
+  }
   async export(ctx?: any): Promise<number> {
-    const idx = -1
     const stmt = await this.queryBuilder.build(ctx)
     const stream = this.connection.queryStream(stmt.query, stmt.params || {})
     let metaData: [{ name: string }]
+    let i = 0
+    let j = 0
     // access metadata of query (IF NEED)
-    stream.on("metadata", (metadata: any) => (metaData = metadata))
-    // handle data row...
-    stream.on("data", (row: any[]) => {
-      const obj = convertToObject(row, metaData, this.attributes)
-      // this.write(this.format(obj as any))
-      const exportStr = this.formatter.format(obj as any)
-      this.writer.write(exportStr)
-    })
     // handle any error if occurred
-    stream.on("error", async (error: any) => {
-      console.error(error)
-      await closeConnection(this.connection)
-    })
+    if (this.isClose) {
+      stream.on("error", async (error: any) => {
+        console.error(error)
+        await closeConnection(this.connection)
+      })
+    }
     // all data has been fetched ...
     // the stream should be closed when it has been finished
     stream.on("end", () => {
@@ -655,15 +680,38 @@ export class ExportService<T> {
 
       if (this.writer.end) {
         this.writer.end()
-      } else if (this.writer.flush) {
+      }
+      if (this.writer.flush) {
         this.writer.flush()
       }
     })
-    // can now close connection...  (Note: do not close connections on 'end')
-    stream.on("close", async () => await closeConnection(this.connection))
-    return idx
+    if (this.isClose) {
+      // can now close connection...  (Note: do not close connections on 'end')
+      stream.on("close", async () => await closeConnection(this.connection))
+    }
+    stream.on("metadata", (metadata: any) => (metaData = metadata))
+    // handle data row...
+    stream.on("data", (row: any[]) => {
+      i++
+      j++
+      const obj = convertToObject(row, metaData, this.attributes)
+      // this.write(this.format(obj as any))
+      const exportStr = this.formatter.format(obj as any)
+      this.writer.write(exportStr)
+      console.log("j " + j + " " + this.progressSize)
+      if (j >= this.progressSize) {
+        console.log(`Progress: ${i} records processed of file '${this.filename}' ${exportStr}`)
+        if (this.logInfo) {
+          console.log("Enter log info")
+          this.logInfo(`Progress: ${i} records processed of file '${this.filename}' ${exportStr}`)
+        }
+        j = 0
+      }
+    })
+    return i
   }
 }
+
 async function closeConnection(connection: Connection) {
   if (!connection) {
     return
@@ -699,4 +747,15 @@ function convertToObject(row: any[], metadata: [{ name: string }], attributes: A
     }
   }
   return rsl
+}
+export function select(table: string, attrs: Attributes): string {
+  const cols: string[] = []
+  const ks = Object.keys(attrs)
+  for (const k of ks) {
+    const attr = attrs[k]
+    attr.name = k
+    const field = attr.column ? attr.column : k
+    cols.push(field)
+  }
+  return `select ${cols.join(",")} from ${table}`
 }
