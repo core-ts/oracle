@@ -21,40 +21,63 @@ export class OracleTransaction implements Transaction {
     this.queryOne = this.queryOne.bind(this)
     this.executeScalar = this.executeScalar.bind(this)
     this.count = this.count.bind(this)
+    this.ensureActive = this.ensureActive.bind(this)
   }
+  private completed = false
+  private ensureActive(): void {
+  if (this.completed) {
+    throw new Error("Transaction has already been completed")
+  }
+}
   async commit(): Promise<void> {
-    await this.con.commit()
-    await this.con.release()
+    this.ensureActive()
+    this.completed = true
+    try {
+      await this.con.commit()
+    } finally {
+      await this.con.close()
+    }
   }
   async rollback(): Promise<void> {
-    await this.con.rollback()
-    await this.con.release()
+    this.ensureActive()
+    this.completed = true
+    try {
+      await this.con.rollback()
+    } finally {
+      await this.con.close()
+    }
   }
   driver = "oracle"
   param(i: number): string {
     return ":" + i
   }
   execute(sql: string, args?: any[], ctx?: any): Promise<number> {
+    this.ensureActive()
     const p = ctx ? ctx : this.con
     return executeTx(p, sql, args)
   }
   executeBatch(statements: Statement[], firstSuccess?: boolean, ctx?: any): Promise<number> {
+    this.ensureActive()
     const p = ctx ? ctx : this.con
     return executeBatchTx(p, statements, firstSuccess)
   }
   query<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T[]> {
+    this.ensureActive()
     const p = ctx ? ctx : this.con
     return queryTx(p, sql, args, m, bools)
   }
   queryOne<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T | null> {
+    this.ensureActive()
     const p = ctx ? ctx : this.con
     return queryOneTx(p, sql, args, m, bools)
   }
   executeScalar<T>(sql: string, args?: any[], ctx?: any): Promise<T | null> {
+    this.ensureActive()
     const p = ctx ? ctx : this.con
     return executeScalarTx<T>(p, sql, args)
   }
   count(sql: string, args?: any[], ctx?: any): Promise<number> {
+    this.ensureActive()
     const p = ctx ? ctx : this.con
     return countTx(p, sql, args)
   }
@@ -124,7 +147,7 @@ export class OracleManager implements DB {
 
 export async function executeBatch(con: Connection, statements: Statement[], firstSuccess?: boolean): Promise<number> {
   if (!statements || statements.length === 0) {
-    return Promise.resolve(0)
+    return 0
   } else if (statements.length === 1) {
     return execute(con, statements[0].query, statements[0].params)
   }
@@ -165,14 +188,14 @@ export async function executeBatch(con: Connection, statements: Statement[], fir
     // console.log(e);
     throw e
   } finally {
-    await con.release()
+    await con.close()
   }
 }
 export async function executeBatchTx(con: Connection, statements: Statement[], firstSuccess?: boolean): Promise<number> {
   if (!statements || statements.length === 0) {
-    return Promise.resolve(0)
+    return 0
   } else if (statements.length === 1) {
-    return execute(con, statements[0].query, statements[0].params)
+    return executeTx(con, statements[0].query, statements[0].params)
   }
   let c = 0
   try {
@@ -211,13 +234,7 @@ export async function executeBatchTx(con: Connection, statements: Statement[], f
 
 export function executeTx(con: Connection, sql: string, args?: any[]): Promise<number> {
   const p = toArray(args)
-  return con.execute(sql, p, { autoCommit: false }).then((results) => {
-    if (results.rowsAffected) {
-      return results.rowsAffected
-    } else {
-      return -1
-    }
-  })
+  return con.execute(sql, p, { autoCommit: false }).then((results) => results.rowsAffected ?? 0)
 }
 export function queryTx<T>(con: Connection, sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T[]> {
   const p = toArray(args)
@@ -258,13 +275,7 @@ export function countTx(con: Connection, sql: string, args?: any[]): Promise<num
 
 export function execute(con: Connection, sql: string, args?: any[]): Promise<number> {
   const p = toArray(args)
-  return con.execute(sql, p).then((results) => {
-    if (results.rowsAffected) {
-      return results.rowsAffected
-    } else {
-      return -1
-    }
-  })
+  return con.execute(sql, p).then((results) => results.rowsAffected ?? 0).finally(() => con.close())
 }
 export function query<T>(con: Connection, sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T[]> {
   const p = toArray(args)
@@ -282,7 +293,7 @@ export function query<T>(con: Connection, sql: string, args?: any[], m?: StringM
     } else {
       return []
     }
-  })
+  }).finally(() => con.close())
 }
 export function queryOne<T>(con: Connection, sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T | null> {
   return query<T>(con, sql, args, m, bools).then((r) => {
@@ -390,7 +401,7 @@ export function handleBool<T>(objs: T[], bools: Attribute[]) {
         const v = o[field.name]
         if (typeof v !== "boolean" && v != null && v !== undefined) {
           const b = field.true
-          if (b == null || b === undefined) {
+          if (b == null) {
             // tslint:disable-next-line:triple-equals
             o[field.name] = "1" == v || "T" == v || "Y" == v || "true" == v
           } else {
@@ -497,10 +508,7 @@ export function isEmpty(s: string): boolean {
 export function formatData<T>(nameColumn: Metadata<T>[], data: any, m?: StringMap): T {
   const result: any = {}
   nameColumn.forEach((item, index) => {
-    let key = item.name
-    if (m) {
-      key = m[item.name]
-    }
+    const key = m?.[item.name] ?? item.name
     result[key] = data[index]
   })
   return result
