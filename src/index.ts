@@ -1,6 +1,6 @@
-import { Connection, Metadata } from "oracledb"
+import { Connection, Metadata, Pool } from "oracledb"
 import { buildToInsertBatch, buildToSave, buildToSaveBatch, param } from "./build"
-import { Attribute, Attributes, Manager, Statement, StringMap } from "./metadata"
+import { Attribute, Attributes, DB, Statement, StringMap, Transaction } from "./metadata"
 
 export * from "./build"
 export * from "./checker"
@@ -12,8 +12,8 @@ export * from "./metadata"
 export class resource {
   static string?: boolean
 }
-export class OracleManager implements Manager {
-  constructor(public conn: Connection) {
+export class OracleTransaction implements Transaction {
+  constructor(protected con: Connection) {
     this.param = this.param.bind(this)
     this.execute = this.execute.bind(this)
     this.executeBatch = this.executeBatch.bind(this)
@@ -22,50 +22,120 @@ export class OracleManager implements Manager {
     this.executeScalar = this.executeScalar.bind(this)
     this.count = this.count.bind(this)
   }
+  async commit(): Promise<void> {
+    await this.con.commit()
+    await this.con.release()
+  }
+  async rollback(): Promise<void> {
+    await this.con.rollback()
+    await this.con.release()
+  }
   driver = "oracle"
   param(i: number): string {
     return ":" + i
   }
   execute(sql: string, args?: any[], ctx?: any): Promise<number> {
-    const p = ctx ? ctx : this.conn
-    return execute(p, sql, args)
+    const p = ctx ? ctx : this.con
+    return executeTx(p, sql, args)
   }
   executeBatch(statements: Statement[], firstSuccess?: boolean, ctx?: any): Promise<number> {
-    const p = ctx ? ctx : this.conn
-    return executeBatch(p, statements, firstSuccess)
+    const p = ctx ? ctx : this.con
+    return executeBatchTx(p, statements, firstSuccess)
   }
   query<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T[]> {
-    const p = ctx ? ctx : this.conn
-    return query(p, sql, args, m, bools)
+    const p = ctx ? ctx : this.con
+    return queryTx(p, sql, args, m, bools)
   }
   queryOne<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T | null> {
-    const p = ctx ? ctx : this.conn
-    return queryOne(p, sql, args, m, bools)
+    const p = ctx ? ctx : this.con
+    return queryOneTx(p, sql, args, m, bools)
   }
   executeScalar<T>(sql: string, args?: any[], ctx?: any): Promise<T | null> {
-    const p = ctx ? ctx : this.conn
-    return executeScalar<T>(p, sql, args)
+    const p = ctx ? ctx : this.con
+    return executeScalarTx<T>(p, sql, args)
   }
   count(sql: string, args?: any[], ctx?: any): Promise<number> {
-    const p = ctx ? ctx : this.conn
-    return count(p, sql, args)
+    const p = ctx ? ctx : this.con
+    return countTx(p, sql, args)
+  }
+}
+export class OracleManager implements DB {
+  constructor(protected pool: Pool) {
+    this.param = this.param.bind(this)
+    this.execute = this.execute.bind(this)
+    this.executeBatch = this.executeBatch.bind(this)
+    this.query = this.query.bind(this)
+    this.queryOne = this.queryOne.bind(this)
+    this.executeScalar = this.executeScalar.bind(this)
+    this.count = this.count.bind(this)
+  }
+  async beginTransaction(): Promise<Transaction> {
+    const connection = await this.pool.getConnection()
+    const tx = new OracleTransaction(connection)
+    return tx
+  }
+  driver = "oracle"
+  param(i: number): string {
+    return ":" + i
+  }
+  execute(sql: string, args?: any[], ctx?: any): Promise<number> {
+    if (ctx) {
+      return execute(ctx, sql, args)
+    } else {
+      return this.pool.getConnection().then((con) => execute(con, sql, args))
+    }
+  }
+  executeBatch(statements: Statement[], firstSuccess?: boolean, ctx?: any): Promise<number> {
+    if (ctx) {
+      return executeBatch(ctx, statements, firstSuccess)
+    } else {
+      return this.pool.getConnection().then((con) => executeBatch(con, statements, firstSuccess))
+    }
+  }
+  query<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T[]> {
+    if (ctx) {
+      return query<T>(ctx, sql, args, m, bools)
+    } else {
+      return this.pool.getConnection().then((con) => query<T>(con, sql, args, m, bools))
+    }
+  }
+  queryOne<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T | null> {
+    if (ctx) {
+      return queryOne<T>(ctx, sql, args, m, bools)
+    } else {
+      return this.pool.getConnection().then((con) => queryOne<T>(con, sql, args, m, bools))
+    }
+  }
+  executeScalar<T>(sql: string, args?: any[], ctx?: any): Promise<T | null> {
+    if (ctx) {
+      return executeScalar(ctx, sql, args)
+    } else {
+      return this.pool.getConnection().then((con) => executeScalar(con, sql, args))
+    }
+  }
+  count(sql: string, args?: any[], ctx?: any): Promise<number> {
+    if (ctx) {
+      return count(ctx, sql, args)
+    } else {
+      return this.pool.getConnection().then((con) => count(con, sql, args))
+    }
   }
 }
 
-export async function executeBatch(conn: Connection, statements: Statement[], firstSuccess?: boolean): Promise<number> {
+export async function executeBatch(con: Connection, statements: Statement[], firstSuccess?: boolean): Promise<number> {
   if (!statements || statements.length === 0) {
     return Promise.resolve(0)
   } else if (statements.length === 1) {
-    return execute(conn, statements[0].query, statements[0].params)
+    return execute(con, statements[0].query, statements[0].params)
   }
   let c = 0
   try {
     if (firstSuccess) {
-      const result0 = await conn.execute(statements[0].query, statements[0].params as any, { autoCommit: false })
+      const result0 = await con.execute(statements[0].query, statements[0].params as any, { autoCommit: false })
       if (result0 && result0.rowsAffected && result0.rowsAffected > 0) {
         const subs = statements.slice(1)
         const arrPromise = subs.map((item) => {
-          return conn.execute(item.query, item.params ? item.params : [], { autoCommit: false })
+          return con.execute(item.query, item.params ? item.params : [], { autoCommit: false })
         })
         const results = await Promise.all(arrPromise)
         for (const obj of results) {
@@ -76,35 +146,80 @@ export async function executeBatch(conn: Connection, statements: Statement[], fi
         if (result0.rowsAffected) {
           c += result0.rowsAffected
         }
-        await conn.commit()
+        await con.commit()
         return c
       } else {
-        await conn.commit()
+        await con.commit()
         return c
       }
     } else {
-      const arrPromise = statements.map((item) => conn.execute(item.query, item.params ? item.params : [], { autoCommit: false }))
+      const arrPromise = statements.map((item) => con.execute(item.query, item.params ? item.params : [], { autoCommit: false }))
       const results = await Promise.all(arrPromise)
       for (const obj of results) {
         if (obj.rowsAffected) {
           c += obj.rowsAffected
         }
       }
-      await conn.commit()
+      await con.commit()
       return c
     }
   } catch (e) {
-    await conn.rollback()
+    await con.rollback()
     // console.log(e);
     throw e
   } finally {
-    conn.release()
+    await con.release()
+  }
+}
+export async function executeBatchTx(con: Connection, statements: Statement[], firstSuccess?: boolean): Promise<number> {
+  if (!statements || statements.length === 0) {
+    return Promise.resolve(0)
+  } else if (statements.length === 1) {
+    return execute(con, statements[0].query, statements[0].params)
+  }
+  let c = 0
+  try {
+    if (firstSuccess) {
+      const result0 = await con.execute(statements[0].query, statements[0].params as any, { autoCommit: false })
+      if (result0 && result0.rowsAffected && result0.rowsAffected > 0) {
+        const subs = statements.slice(1)
+        const arrPromise = subs.map((item) => {
+          return con.execute(item.query, item.params ? item.params : [], { autoCommit: false })
+        })
+        const results = await Promise.all(arrPromise)
+        for (const obj of results) {
+          if (obj.rowsAffected) {
+            c += obj.rowsAffected
+          }
+        }
+        if (result0.rowsAffected) {
+          c += result0.rowsAffected
+        }
+        return c
+      } else {
+        return c
+      }
+    } else {
+      const arrPromise = statements.map((item) => con.execute(item.query, item.params ? item.params : [], { autoCommit: false }))
+      const results = await Promise.all(arrPromise)
+      for (const obj of results) {
+        if (obj.rowsAffected) {
+          c += obj.rowsAffected
+        }
+      }
+      return c
+    }
+  } catch (e) {
+    // console.log(e);
+    throw e
+  } finally {
+    con.release()
   }
 }
 
-export function execute(conn: Connection, sql: string, args?: any[]): Promise<number> {
+export function executeTx(con: Connection, sql: string, args?: any[]): Promise<number> {
   const p = toArray(args)
-  return conn.execute(sql, p).then((results) => {
+  return con.execute(sql, p, { autoCommit: false }).then((results) => {
     if (results.rowsAffected) {
       return results.rowsAffected
     } else {
@@ -112,10 +227,9 @@ export function execute(conn: Connection, sql: string, args?: any[]): Promise<nu
     }
   })
 }
-
-export function query<T>(conn: Connection, sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T[]> {
+export function queryTx<T>(con: Connection, sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T[]> {
   const p = toArray(args)
-  return conn.execute<T>(sql, p).then((results) => {
+  return con.execute<T>(sql, p, { autoCommit: false }).then((results) => {
     if (results.rows) {
       const x = results.metaData
       if (!x) {
@@ -131,15 +245,13 @@ export function query<T>(conn: Connection, sql: string, args?: any[], m?: String
     }
   })
 }
-
-export function queryOne<T>(conn: Connection, sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T | null> {
-  return query<T>(conn, sql, args, m, bools).then((r) => {
+export function queryOneTx<T>(con: Connection, sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T | null> {
+  return queryTx<T>(con, sql, args, m, bools).then((r) => {
     return r && r.length > 0 ? r[0] : null
   })
 }
-
-export function executeScalar<T>(conn: Connection, sql: string, args?: any[]): Promise<T | null> {
-  return queryOne<T>(conn, sql, args).then((r) => {
+export function executeScalarTx<T>(con: Connection, sql: string, args?: any[]): Promise<T | null> {
+  return queryOneTx<T>(con, sql, args).then((r) => {
     if (!r) {
       return null
     } else {
@@ -148,39 +260,86 @@ export function executeScalar<T>(conn: Connection, sql: string, args?: any[]): P
     }
   })
 }
-
-export function count(conn: Connection, sql: string, args?: any[]): Promise<number> {
-  return executeScalar<number>(conn, sql, args).then((res) => (res !== null ? res : 0))
+export function countTx(con: Connection, sql: string, args?: any[]): Promise<number> {
+  return executeScalarTx<number>(con, sql, args).then((res) => (res !== null ? res : 0))
 }
-export function insertBatch<T>(conn: Connection | ((sql: string, args?: any[]) => Promise<number>), objs: T[], table: string, attrs: Attributes, ver?: string, notSkipInvalid?: boolean, buildParam?: (i: number) => string): Promise<number> {
+
+export function execute(con: Connection, sql: string, args?: any[]): Promise<number> {
+  const p = toArray(args)
+  return con.execute(sql, p).then((results) => {
+    if (results.rowsAffected) {
+      return results.rowsAffected
+    } else {
+      return -1
+    }
+  })
+}
+export function query<T>(con: Connection, sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T[]> {
+  const p = toArray(args)
+  return con.execute<T>(sql, p).then((results) => {
+    if (results.rows) {
+      const x = results.metaData
+      if (!x) {
+        return results.rows
+      } else {
+        const arrayResult = results.rows.map((item) => {
+          return formatData<T>(x, item)
+        })
+        return handleResults(arrayResult, m, bools)
+      }
+    } else {
+      return []
+    }
+  })
+}
+export function queryOne<T>(con: Connection, sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T | null> {
+  return query<T>(con, sql, args, m, bools).then((r) => {
+    return r && r.length > 0 ? r[0] : null
+  })
+}
+export function executeScalar<T>(con: Connection, sql: string, args?: any[]): Promise<T | null> {
+  return queryOne<T>(con, sql, args).then((r) => {
+    if (!r) {
+      return null
+    } else {
+      const keys = Object.keys(r)
+      return (r as any)[keys[0]]
+    }
+  })
+}
+export function count(con: Connection, sql: string, args?: any[]): Promise<number> {
+  return executeScalar<number>(con, sql, args).then((res) => (res !== null ? res : 0))
+}
+
+export function insertBatch<T>(con: Connection | ((sql: string, args?: any[]) => Promise<number>), objs: T[], table: string, attrs: Attributes, ver?: string, notSkipInvalid?: boolean, buildParam?: (i: number) => string): Promise<number> {
   const s = buildToInsertBatch<T>(objs, table, attrs, ver, notSkipInvalid, buildParam)
   if (!s) {
     return Promise.resolve(-1)
   }
-  if (typeof conn === "function") {
-    return conn(s.query, s.params)
+  if (typeof con === "function") {
+    return con(s.query, s.params)
   } else {
-    return execute(conn, s.query, s.params)
+    return execute(con, s.query, s.params)
   }
 }
-export function save<T>(conn: Connection | ((sql: string, args?: any[]) => Promise<number>), obj: T, table: string, attrs: Attributes, ver?: string, buildParam?: (i: number) => string, i?: number): Promise<number> {
+export function save<T>(con: Connection | ((sql: string, args?: any[]) => Promise<number>), obj: T, table: string, attrs: Attributes, ver?: string, buildParam?: (i: number) => string, i?: number): Promise<number> {
   const s = buildToSave(obj, table, attrs, ver, buildParam)
   if (!s) {
     return Promise.resolve(-1)
   }
-  if (typeof conn === "function") {
-    return conn(s.query, s.params)
+  if (typeof con === "function") {
+    return con(s.query, s.params)
   } else {
-    return execute(conn, s.query, s.params)
+    return execute(con, s.query, s.params)
   }
 }
 
-export function saveBatch<T>(conn: Connection | ((statements: Statement[]) => Promise<number>), objs: T[], table: string, attrs: Attributes, ver?: string, buildParam?: (i: number) => string): Promise<number> {
+export function saveBatch<T>(con: Connection | ((statements: Statement[]) => Promise<number>), objs: T[], table: string, attrs: Attributes, ver?: string, buildParam?: (i: number) => string): Promise<number> {
   const s = buildToSaveBatch(objs, table, attrs, ver, buildParam)
-  if (typeof conn === "function") {
-    return conn(s)
+  if (typeof con === "function") {
+    return con(s)
   } else {
-    return executeBatch(conn, s)
+    return executeBatch(con, s)
   }
 }
 
@@ -507,17 +666,17 @@ export class OracleBatchWriter<T> {
   map?: (v: T) => T
   param?: (i: number) => string
   constructor(
-    conn: Connection | ((statements: Statement[]) => Promise<number>),
+    con: Connection | ((statements: Statement[]) => Promise<number>),
     public table: string,
     public attributes: Attributes,
     toDB?: (v: T) => T,
     buildParam?: (i: number) => string,
   ) {
     this.write = this.write.bind(this)
-    if (typeof conn === "function") {
-      this.execute = conn
+    if (typeof con === "function") {
+      this.execute = con
     } else {
-      this.connection = conn
+      this.connection = con
     }
     this.param = buildParam
     this.map = toDB

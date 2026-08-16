@@ -11,11 +11,10 @@ export interface HealthChecker {
 }
 
 export class OracleChecker implements HealthChecker {
-  private static readonly TIMEOUT = 4500
-
   constructor(
-    private readonly pool: Pool,
-    private readonly checkerName = "oracle",
+    protected readonly pool: Pool,
+    protected readonly checkerName = "oracle",
+    protected readonly timeout = 4500,
   ) {}
 
   name(): string {
@@ -37,7 +36,7 @@ export class OracleChecker implements HealthChecker {
     try {
       connection = await this.pool.getConnection()
 
-      connection.callTimeout = OracleChecker.TIMEOUT
+      connection.callTimeout = this.timeout
 
       await connection.execute("SELECT 1 FROM DUAL")
 
