@@ -133,18 +133,14 @@ export async function executeBatch(con: Connection, statements: Statement[], fir
     if (firstSuccess) {
       const result0 = await con.execute(statements[0].query, statements[0].params as any, { autoCommit: false })
       if (result0 && result0.rowsAffected && result0.rowsAffected > 0) {
-        const subs = statements.slice(1)
-        const arrPromise = subs.map((item) => {
-          return con.execute(item.query, item.params ? item.params : [], { autoCommit: false })
-        })
-        const results = await Promise.all(arrPromise)
-        for (const obj of results) {
-          if (obj.rowsAffected) {
-            c += obj.rowsAffected
+        c += result0.rowsAffected
+        const l = statements.length
+        for (let j = 1; j < l; j++) {
+          const item = statements[j]
+          const res = await con.execute(item.query, item.params ? item.params : [], { autoCommit: false })
+          if (res.rowsAffected) {
+            c += res.rowsAffected
           }
-        }
-        if (result0.rowsAffected) {
-          c += result0.rowsAffected
         }
         await con.commit()
         return c
@@ -153,11 +149,12 @@ export async function executeBatch(con: Connection, statements: Statement[], fir
         return c
       }
     } else {
-      const arrPromise = statements.map((item) => con.execute(item.query, item.params ? item.params : [], { autoCommit: false }))
-      const results = await Promise.all(arrPromise)
-      for (const obj of results) {
-        if (obj.rowsAffected) {
-          c += obj.rowsAffected
+      const l = statements.length
+      for (let j = 0; j < l; j++) {
+        const item = statements[j]
+        const res = await con.execute(item.query, item.params ? item.params : [], { autoCommit: false })
+        if (res.rowsAffected) {
+          c += res.rowsAffected
         }
       }
       await con.commit()
@@ -182,29 +179,26 @@ export async function executeBatchTx(con: Connection, statements: Statement[], f
     if (firstSuccess) {
       const result0 = await con.execute(statements[0].query, statements[0].params as any, { autoCommit: false })
       if (result0 && result0.rowsAffected && result0.rowsAffected > 0) {
-        const subs = statements.slice(1)
-        const arrPromise = subs.map((item) => {
-          return con.execute(item.query, item.params ? item.params : [], { autoCommit: false })
-        })
-        const results = await Promise.all(arrPromise)
-        for (const obj of results) {
-          if (obj.rowsAffected) {
-            c += obj.rowsAffected
+        c += result0.rowsAffected
+        const l = statements.length
+        for (let j = 1; j < l; j++) {
+          const item = statements[j]
+          const res = await con.execute(item.query, item.params ? item.params : [], { autoCommit: false })
+          if (res.rowsAffected) {
+            c += res.rowsAffected
           }
-        }
-        if (result0.rowsAffected) {
-          c += result0.rowsAffected
         }
         return c
       } else {
         return c
       }
     } else {
-      const arrPromise = statements.map((item) => con.execute(item.query, item.params ? item.params : [], { autoCommit: false }))
-      const results = await Promise.all(arrPromise)
-      for (const obj of results) {
-        if (obj.rowsAffected) {
-          c += obj.rowsAffected
+      const l = statements.length
+      for (let j = 0; j < l; j++) {
+        const item = statements[j]
+        const res = await con.execute(item.query, item.params ? item.params : [], { autoCommit: false })
+        if (res.rowsAffected) {
+          c += res.rowsAffected
         }
       }
       return c
@@ -212,8 +206,6 @@ export async function executeBatchTx(con: Connection, statements: Statement[], f
   } catch (e) {
     // console.log(e);
     throw e
-  } finally {
-    con.release()
   }
 }
 
@@ -660,26 +652,17 @@ export class OracleStreamWriter<T> {
 }
 // tslint:disable-next-line:max-classes-per-file
 export class OracleBatchWriter<T> {
-  connection?: Connection
   version?: string
-  execute?: (statements: Statement[]) => Promise<number>
-  map?: (v: T) => T
   param?: (i: number) => string
   constructor(
-    con: Connection | ((statements: Statement[]) => Promise<number>),
-    public table: string,
-    public attributes: Attributes,
-    toDB?: (v: T) => T,
+    protected connection: Connection,
+    protected table: string,
+    protected attributes: Attributes,
+    protected map?: (v: T) => T,
     buildParam?: (i: number) => string,
   ) {
     this.write = this.write.bind(this)
-    if (typeof con === "function") {
-      this.execute = con
-    } else {
-      this.connection = con
-    }
-    this.param = buildParam
-    this.map = toDB
+    this.param = buildParam ? buildParam : param
     const x = version(attributes)
     if (x) {
       this.version = x.name
@@ -699,11 +682,7 @@ export class OracleBatchWriter<T> {
     }
     const stmts = buildToSaveBatch(list, this.table, this.attributes, this.version, this.param)
     if (stmts && stmts.length > 0) {
-      if (this.execute) {
-        return this.execute(stmts)
-      } else {
-        return executeBatch(this.connection as any, stmts)
-      }
+      return executeBatch(this.connection, stmts)
     } else {
       return Promise.resolve(0)
     }
