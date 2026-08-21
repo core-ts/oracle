@@ -8,13 +8,10 @@ export function params(length: number, from?: number): string[] {
   if (from == null) {
     from = 0
   }
-
   const ps: string[] = []
-
   for (let i = 1; i <= length; i++) {
     ps.push(param(i + from))
   }
-
   return ps
 }
 
@@ -38,44 +35,35 @@ export function metadata(attrs: Attributes): Metadata {
   for (const k of ks) {
     const attr = attrs[k]
     attr.name = k
-
     if (attr.key) {
       ats.push(attr)
     }
-
     if (!attr.ignored) {
       fields.push(k)
     }
-
     if (attr.type === "boolean") {
       bools.push(attr)
     }
-
     if (attr.version) {
       m.version = k
     }
-
     const field = attr.column ? attr.column : k
     const s = field.toLowerCase()
-
     if (s !== k) {
       mp[s] = k
       isMap = true
     }
   }
-
   if (isMap) {
     m.map = mp
   }
-
   if (bools.length > 0) {
     m.bools = bools
   }
-
   return m
 }
 
-export function buildToInsertBatch<T>(objs: T[], table: string, attrs: Attributes, ver?: string, notSkipInvalid?: boolean, buildParam?: (i: number) => string): Statement | undefined {
+export function buildToInsertBatch<T>(objs: T[], table: string, attrs: Attributes, ver?: string, notSkipInvalid?: boolean, buildParam?: (i: number) => string): Statement {
   if (!buildParam) {
     buildParam = param
   }
@@ -138,7 +126,7 @@ export function buildToInsertBatch<T>(objs: T[], table: string, attrs: Attribute
 
     if (cols.length === 0) {
       if (notSkipInvalid) {
-        return undefined
+        return { query: "", params: args }
       }
     } else {
       const s = `into ${table}(${cols.join(",")})values(${values.join(",")})`
@@ -147,14 +135,14 @@ export function buildToInsertBatch<T>(objs: T[], table: string, attrs: Attribute
   }
 
   if (rows.length === 0) {
-    return undefined
+    return { query: "", params: args }
   }
 
   const query = `insert all ${rows.join(" ")} select * from dual`
   return { query, params: args }
 }
 
-export function buildToSave<T>(obj: T, table: string, attrs: Attributes, ver?: string, buildParam?: (i: number) => string, pks?: Attribute[], i?: number): Statement | undefined {
+export function buildToSave<T>(obj: T, table: string, attrs: Attributes, ver?: string, buildParam?: (i: number) => string, pks?: Attribute[], i?: number): Statement {
   if (!i) {
     i = 1
   }
@@ -189,39 +177,38 @@ export function buildToSave<T>(obj: T, table: string, attrs: Attributes, ver?: s
   if (pks.length > 0) {
     for (const pk of pks) {
       if (pk.name) {
-        const v = (obj as any)[pk.name]
-
-        if (!v) {
-          return undefined
-        } else {
-          const attr = attrs[pk.name]
-          const field = attr.column ? attr.column : pk.name
-          let x: string
-
-          if (v === null) {
-            x = "null"
-            noUpdate = true
-          } else if (v === "") {
-            x = `''`
-          } else if (typeof v === "number") {
-            x = toString(v)
-          } else {
-            x = buildParam(i++)
-            if (typeof v === "boolean") {
-              if (v === true) {
-                const v2 = attr.true ? attr.true : `'1'`
-                args.push(v2)
-              } else {
-                const v2 = attr.false && attr.false !== 0 ? attr.false : `'0'`
-                args.push(v2)
-              }
-            } else {
-              args.push(v)
-            }
-          }
-
-          colQuery.push(`${field}=${x}`)
+        const attr = attrs[pk.name]
+        let v = (obj as any)[pk.name]
+        if (v == null) {
+          v = attr.default
         }
+
+        const field = attr.column ? attr.column : pk.name
+        let x: string
+
+        if (v === null) {
+          x = "null"
+          noUpdate = true
+        } else if (v === "") {
+          x = `''`
+        } else if (typeof v === "number") {
+          x = toString(v)
+        } else {
+          x = buildParam(i++)
+          if (typeof v === "boolean") {
+            if (v === true) {
+              const v2 = attr.true ? attr.true : `'1'`
+              args.push(v2)
+            } else {
+              const v2 = attr.false && attr.false !== 0 ? attr.false : `'0'`
+              args.push(v2)
+            }
+          } else {
+            args.push(v)
+          }
+        }
+
+        colQuery.push(`${field}=${x}`)
       }
     }
 
@@ -298,7 +285,7 @@ export function buildToSave<T>(obj: T, table: string, attrs: Attributes, ver?: s
   }
 
   if (pks.length === 0 && cols.length === 0) {
-    return undefined
+    return { query: "", params: args }
   }
 
   if (!isVersion && ver && ver.length > 0) {
@@ -355,7 +342,7 @@ export function buildToSaveBatch<T>(objs: T[], table: string, attrs: Attributes,
   for (const obj of objs) {
     const smt = buildToSave(obj, table, attrs, ver, buildParam, pks)
 
-    if (smt) {
+    if (smt.query) {
       sts.push(smt)
     }
   }
