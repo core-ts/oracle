@@ -294,7 +294,7 @@ export function count(con: Connection, sql: string, args?: any[]): Promise<numbe
 
 export function insertBatch<T>(con: Connection | ((sql: string, args?: any[]) => Promise<number>), objs: T[], table: string, attrs: Attributes, ver?: string, notSkipInvalid?: boolean, buildParam?: (i: number) => string): Promise<number> {
   const s = buildToInsertBatch<T>(objs, table, attrs, ver, notSkipInvalid, buildParam)
-  if (!s) {
+  if (!s.query) {
     return Promise.resolve(-1)
   }
   if (typeof con === "function") {
@@ -305,7 +305,7 @@ export function insertBatch<T>(con: Connection | ((sql: string, args?: any[]) =>
 }
 export function save<T>(con: Connection | ((sql: string, args?: any[]) => Promise<number>), obj: T, table: string, attrs: Attributes, buildParam?: (i: number) => string): Promise<number> {
   const s = buildToSave(obj, table, attrs, buildParam)
-  if (!s) {
+  if (!s.query) {
     return Promise.resolve(-1)
   }
   if (typeof con === "function") {
@@ -568,7 +568,7 @@ export class OracleWriter<T> {
       obj2 = this.map(obj)
     }
     const stmt = buildToSave(obj2, this.table, this.attributes, this.param)
-    if (stmt) {
+    if (stmt.query) {
       if (this.oneIfSuccess) {
         return execute(this.connection, stmt.query, stmt.params).then((ct) => (ct > 0 ? 1 : 0))
       } else {
