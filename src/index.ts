@@ -56,9 +56,9 @@ export class OracleTransaction implements Transaction {
     this.ensureActive()
     return executeTx(this.con, sql, args)
   }
-  executeBatch(statements: Statement[], firstSuccess?: boolean): Promise<number> {
+  executeBatch(statements: Statement[], requireFirstAffected?: boolean): Promise<number> {
     this.ensureActive()
-    return executeBatchTx(this.con, statements, firstSuccess)
+    return executeBatchTx(this.con, statements, requireFirstAffected)
   }
   query<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T[]> {
     this.ensureActive()
@@ -100,8 +100,8 @@ export class OracleManager implements DB {
   execute(sql: string, args?: any[]): Promise<number> {
     return this.pool.getConnection().then((con) => execute(con, sql, args))
   }
-  executeBatch(statements: Statement[], firstSuccess?: boolean): Promise<number> {
-    return this.pool.getConnection().then((con) => executeBatch(con, statements, firstSuccess))
+  executeBatch(statements: Statement[], requireFirstAffected?: boolean): Promise<number> {
+    return this.pool.getConnection().then((con) => executeBatch(con, statements, requireFirstAffected))
   }
   query<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T[]> {
     return this.pool.getConnection().then((con) => query<T>(con, sql, args, m, bools))
@@ -117,15 +117,13 @@ export class OracleManager implements DB {
   }
 }
 
-export async function executeBatch(con: Connection, statements: Statement[], firstSuccess?: boolean): Promise<number> {
+export async function executeBatch(con: Connection, statements: Statement[], requireFirstAffected?: boolean): Promise<number> {
   if (!statements || statements.length === 0) {
     return 0
-  } else if (statements.length === 1) {
-    return execute(con, statements[0].query, statements[0].params)
   }
   let c = 0
   try {
-    if (firstSuccess) {
+    if (requireFirstAffected) {
       const result0 = await con.execute(statements[0].query, statements[0].params as any, { autoCommit: false })
       if (result0 && result0.rowsAffected && result0.rowsAffected > 0) {
         c += result0.rowsAffected
@@ -156,22 +154,23 @@ export async function executeBatch(con: Connection, statements: Statement[], fir
       return c
     }
   } catch (e) {
-    await con.rollback()
+    try {
+      await con.rollback()
+    } catch(e0) {
+    }
     // console.log(e);
     throw e
   } finally {
     await con.close()
   }
 }
-export async function executeBatchTx(con: Connection, statements: Statement[], firstSuccess?: boolean): Promise<number> {
+export async function executeBatchTx(con: Connection, statements: Statement[], requireFirstAffected?: boolean): Promise<number> {
   if (!statements || statements.length === 0) {
     return 0
-  } else if (statements.length === 1) {
-    return executeTx(con, statements[0].query, statements[0].params)
   }
   let c = 0
   try {
-    if (firstSuccess) {
+    if (requireFirstAffected) {
       const result0 = await con.execute(statements[0].query, statements[0].params as any, { autoCommit: false })
       if (result0 && result0.rowsAffected && result0.rowsAffected > 0) {
         c += result0.rowsAffected
@@ -580,11 +579,11 @@ export class OracleWriter<T> {
   }
 }
 // tslint:disable-next-line:max-classes-per-file
-export class OracleBufferedBatchWriterWriter<T> {
+export class OracleBufferedBatchWriter<T> {
   protected list: T[] = []
   protected param?: (i: number) => string
   constructor(
-    protected connection: Connection | ((statements: Statement[]) => Promise<number>),
+    protected pool: Pool,
     protected table: string,
     protected attributes: Attributes,
     protected size: number = 5000,
@@ -616,12 +615,13 @@ export class OracleBufferedBatchWriterWriter<T> {
     if (!this.list || this.list.length === 0) {
       return Promise.resolve(0)
     } else {
-      const total = this.list.length
-      const stmt = buildToSaveBatch(this.list, this.table, this.attributes, this.param)
-      if (stmt) {
-        return executeBatch(this.connection as any, stmt).then((r) => {
-          this.list = []
-          return total
+      const stmts = buildToSaveBatch(this.list, this.table, this.attributes, this.param)
+      if (stmts && stmts.length > 0) {
+        return this.pool.getConnection().then(connection => {
+          return executeBatch(connection, stmts).then((r) => {
+            this.list = []
+            return r
+          })
         })
       } else {
         this.list = []

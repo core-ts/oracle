@@ -11,7 +11,7 @@ export interface Executor {
   driver: string
   param(i: number): string
   execute(sql: string, args?: any[]): Promise<number>
-  executeBatch(statements: Statement[], firstSuccess?: boolean): Promise<number>
+  executeBatch(statements: Statement[], requireFirstAffected?: boolean): Promise<number>
   query<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T[]>
   queryOne<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T | null>
   executeScalar<T>(sql: string, args?: any[]): Promise<T | null>

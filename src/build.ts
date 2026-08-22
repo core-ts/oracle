@@ -100,6 +100,7 @@ export function buildToInsertBatch<T>(objs: T[], table: string, attrs: Attribute
             } else if (typeof v === "number") {
               values.push(toString(v))
             } else if (typeof v === "boolean") {
+              values.push(buildParam(i++))
               if (v === true) {
                 const v2 = attr.true !== undefined ? attr.true : `1`
                 args.push(v2)
@@ -276,9 +277,7 @@ export function buildToSave<T>(obj: T, table: string, attrs: Attributes, buildPa
         ver = k
         values.push(`${1}`)
       } else {
-        if (v === null) {
-          values.push(`null`)
-        } else if (v === "") {
+        if (v === "") {
           values.push(`''`)
         } else if (typeof v === "number") {
           values.push(toString(v))
@@ -317,11 +316,22 @@ export function buildToSave<T>(obj: T, table: string, attrs: Attributes, buildPa
     }
   }
 
-  const query = `merge into ${table} using dual on (${colQuery.join(" and ")})
-  when matched then update set ${colSet.join(",")}
+  if (colSet.length > 0) {
+    const query = `merge into ${table} using dual on (${colQuery.join(" and ")})
+      when matched then update set ${colSet.join(",")}
+      when not matched then insert (${cols.join(",")})
+          values (${values.join(",")})`
+      return { query, params: args }
+  } else {
+    if (cols.length > 0) {
+      const query = `merge into ${table} using dual on (${colQuery.join(" and ")})
   when not matched then insert (${cols.join(",")})
-      values (${values.join(",")})`
-  return { query, params: args }
+  values (${values.join(",")})`
+        return { query, params: args }
+    } else {
+      return { query: "", params: args }
+    }
+  }
 }
 
 export function buildToSaveBatch<T>(objs: T[], table: string, attrs: Attributes, buildParam?: (i: number) => string): Statement[] {
@@ -333,18 +343,15 @@ export function buildToSaveBatch<T>(objs: T[], table: string, attrs: Attributes,
   const ks = Object.keys(attrs)
   let pks: Attribute[] = []
   let ver: string | null = null
-  if (!pks) {
-    pks = []
-    for (const k of ks) {
-      const attr = attrs[k]
-      attr.name = k
+  for (const k of ks) {
+    const attr = attrs[k]
+    attr.name = k
 
-      if (attr.key) {
-        pks.push(attr)
-      }
-      if (attr.version) {
-        ver = k
-      }
+    if (attr.key) {
+      pks.push(attr)
+    }
+    if (attr.version) {
+      ver = k
     }
   }
 
