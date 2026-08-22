@@ -10,12 +10,12 @@ export interface Statement {
 export interface Executor {
   driver: string
   param(i: number): string
-  execute(sql: string, args?: any[], ctx?: any): Promise<number>
-  executeBatch(statements: Statement[], firstSuccess?: boolean, ctx?: any): Promise<number>
-  query<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T[]>
-  queryOne<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T | null>
-  executeScalar<T>(sql: string, args?: any[], ctx?: any): Promise<T | null>
-  count(sql: string, args?: any[], ctx?: any): Promise<number>
+  execute(sql: string, args?: any[]): Promise<number>
+  executeBatch(statements: Statement[], firstSuccess?: boolean): Promise<number>
+  query<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T[]>
+  queryOne<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T | null>
+  executeScalar<T>(sql: string, args?: any[]): Promise<T | null>
+  count(sql: string, args?: any[]): Promise<number>
 }
 export interface Transaction extends Executor {
   commit(): Promise<void>

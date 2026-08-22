@@ -3,7 +3,6 @@ import { buildToInsertBatch, buildToSave, buildToSaveBatch, param } from "./buil
 import { Attribute, Attributes, DB, Statement, StringMap, Transaction } from "./metadata"
 
 export * from "./build"
-export * from "./checker"
 export * from "./metadata"
 
 // OracleDB.autoCommit = true;
@@ -22,13 +21,15 @@ export class OracleTransaction implements Transaction {
     this.executeScalar = this.executeScalar.bind(this)
     this.count = this.count.bind(this)
     this.ensureActive = this.ensureActive.bind(this)
+    this.commit = this.commit.bind(this)
+    this.rollback = this.rollback.bind(this)
   }
   private completed = false
   private ensureActive(): void {
-  if (this.completed) {
-    throw new Error("Transaction has already been completed")
+    if (this.completed) {
+      throw new Error("Transaction has already been completed")
+    }
   }
-}
   async commit(): Promise<void> {
     this.ensureActive()
     this.completed = true
@@ -51,35 +52,29 @@ export class OracleTransaction implements Transaction {
   param(i: number): string {
     return ":" + i
   }
-  execute(sql: string, args?: any[], ctx?: any): Promise<number> {
+  execute(sql: string, args?: any[]): Promise<number> {
     this.ensureActive()
-    const p = ctx ? ctx : this.con
-    return executeTx(p, sql, args)
+    return executeTx(this.con, sql, args)
   }
-  executeBatch(statements: Statement[], firstSuccess?: boolean, ctx?: any): Promise<number> {
+  executeBatch(statements: Statement[], firstSuccess?: boolean): Promise<number> {
     this.ensureActive()
-    const p = ctx ? ctx : this.con
-    return executeBatchTx(p, statements, firstSuccess)
+    return executeBatchTx(this.con, statements, firstSuccess)
   }
-  query<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T[]> {
+  query<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T[]> {
     this.ensureActive()
-    const p = ctx ? ctx : this.con
-    return queryTx(p, sql, args, m, bools)
+    return queryTx(this.con, sql, args, m, bools)
   }
-  queryOne<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T | null> {
+  queryOne<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T | null> {
     this.ensureActive()
-    const p = ctx ? ctx : this.con
-    return queryOneTx(p, sql, args, m, bools)
+    return queryOneTx(this.con, sql, args, m, bools)
   }
-  executeScalar<T>(sql: string, args?: any[], ctx?: any): Promise<T | null> {
+  executeScalar<T>(sql: string, args?: any[]): Promise<T | null> {
     this.ensureActive()
-    const p = ctx ? ctx : this.con
-    return executeScalarTx<T>(p, sql, args)
+    return executeScalarTx<T>(this.con, sql, args)
   }
-  count(sql: string, args?: any[], ctx?: any): Promise<number> {
+  count(sql: string, args?: any[]): Promise<number> {
     this.ensureActive()
-    const p = ctx ? ctx : this.con
-    return countTx(p, sql, args)
+    return countTx(this.con, sql, args)
   }
 }
 export class OracleManager implements DB {
@@ -91,6 +86,7 @@ export class OracleManager implements DB {
     this.queryOne = this.queryOne.bind(this)
     this.executeScalar = this.executeScalar.bind(this)
     this.count = this.count.bind(this)
+    this.beginTransaction = this.beginTransaction.bind(this)
   }
   async beginTransaction(): Promise<Transaction> {
     const connection = await this.pool.getConnection()
@@ -101,47 +97,23 @@ export class OracleManager implements DB {
   param(i: number): string {
     return ":" + i
   }
-  execute(sql: string, args?: any[], ctx?: any): Promise<number> {
-    if (ctx) {
-      return execute(ctx, sql, args)
-    } else {
-      return this.pool.getConnection().then((con) => execute(con, sql, args))
-    }
+  execute(sql: string, args?: any[]): Promise<number> {
+    return this.pool.getConnection().then((con) => execute(con, sql, args))
   }
-  executeBatch(statements: Statement[], firstSuccess?: boolean, ctx?: any): Promise<number> {
-    if (ctx) {
-      return executeBatch(ctx, statements, firstSuccess)
-    } else {
-      return this.pool.getConnection().then((con) => executeBatch(con, statements, firstSuccess))
-    }
+  executeBatch(statements: Statement[], firstSuccess?: boolean): Promise<number> {
+    return this.pool.getConnection().then((con) => executeBatch(con, statements, firstSuccess))
   }
-  query<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T[]> {
-    if (ctx) {
-      return query<T>(ctx, sql, args, m, bools)
-    } else {
-      return this.pool.getConnection().then((con) => query<T>(con, sql, args, m, bools))
-    }
+  query<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T[]> {
+    return this.pool.getConnection().then((con) => query<T>(con, sql, args, m, bools))
   }
-  queryOne<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[], ctx?: any): Promise<T | null> {
-    if (ctx) {
-      return queryOne<T>(ctx, sql, args, m, bools)
-    } else {
-      return this.pool.getConnection().then((con) => queryOne<T>(con, sql, args, m, bools))
-    }
+  queryOne<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T | null> {
+    return this.pool.getConnection().then((con) => queryOne<T>(con, sql, args, m, bools))
   }
-  executeScalar<T>(sql: string, args?: any[], ctx?: any): Promise<T | null> {
-    if (ctx) {
-      return executeScalar(ctx, sql, args)
-    } else {
-      return this.pool.getConnection().then((con) => executeScalar(con, sql, args))
-    }
+  executeScalar<T>(sql: string, args?: any[]): Promise<T | null> {
+    return this.pool.getConnection().then((con) => executeScalar(con, sql, args))
   }
-  count(sql: string, args?: any[], ctx?: any): Promise<number> {
-    if (ctx) {
-      return count(ctx, sql, args)
-    } else {
-      return this.pool.getConnection().then((con) => count(con, sql, args))
-    }
+  count(sql: string, args?: any[]): Promise<number> {
+    return this.pool.getConnection().then((con) => count(con, sql, args))
   }
 }
 
@@ -275,25 +247,31 @@ export function countTx(con: Connection, sql: string, args?: any[]): Promise<num
 
 export function execute(con: Connection, sql: string, args?: any[]): Promise<number> {
   const p = toArray(args)
-  return con.execute(sql, p).then((results) => results.rowsAffected ?? 0).finally(() => con.close())
+  return con
+    .execute(sql, p)
+    .then((results) => results.rowsAffected ?? 0)
+    .finally(() => con.close())
 }
 export function query<T>(con: Connection, sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T[]> {
   const p = toArray(args)
-  return con.execute<T>(sql, p).then((results) => {
-    if (results.rows) {
-      const x = results.metaData
-      if (!x) {
-        return results.rows
+  return con
+    .execute<T>(sql, p)
+    .then((results) => {
+      if (results.rows) {
+        const x = results.metaData
+        if (!x) {
+          return results.rows
+        } else {
+          const arrayResult = results.rows.map((item) => {
+            return formatData<T>(x, item)
+          })
+          return handleResults(arrayResult, m, bools)
+        }
       } else {
-        const arrayResult = results.rows.map((item) => {
-          return formatData<T>(x, item)
-        })
-        return handleResults(arrayResult, m, bools)
+        return []
       }
-    } else {
-      return []
-    }
-  }).finally(() => con.close())
+    })
+    .finally(() => con.close())
 }
 export function queryOne<T>(con: Connection, sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T | null> {
   return query<T>(con, sql, args, m, bools).then((r) => {
@@ -325,8 +303,8 @@ export function insertBatch<T>(con: Connection | ((sql: string, args?: any[]) =>
     return execute(con, s.query, s.params)
   }
 }
-export function save<T>(con: Connection | ((sql: string, args?: any[]) => Promise<number>), obj: T, table: string, attrs: Attributes, ver?: string, buildParam?: (i: number) => string, i?: number): Promise<number> {
-  const s = buildToSave(obj, table, attrs, ver, buildParam)
+export function save<T>(con: Connection | ((sql: string, args?: any[]) => Promise<number>), obj: T, table: string, attrs: Attributes, buildParam?: (i: number) => string): Promise<number> {
+  const s = buildToSave(obj, table, attrs, buildParam)
   if (!s) {
     return Promise.resolve(-1)
   }
@@ -337,8 +315,8 @@ export function save<T>(con: Connection | ((sql: string, args?: any[]) => Promis
   }
 }
 
-export function saveBatch<T>(con: Connection | ((statements: Statement[]) => Promise<number>), objs: T[], table: string, attrs: Attributes, ver?: string, buildParam?: (i: number) => string): Promise<number> {
-  const s = buildToSaveBatch(objs, table, attrs, ver, buildParam)
+export function saveBatch<T>(con: Connection | ((statements: Statement[]) => Promise<number>), objs: T[], table: string, attrs: Attributes, buildParam?: (i: number) => string): Promise<number> {
+  const s = buildToSaveBatch(objs, table, attrs, buildParam)
   if (typeof con === "function") {
     return con(s)
   } else {
@@ -535,13 +513,16 @@ export class OracleBatchInserter<T> {
     protected attributes: Attributes,
     protected map?: (v: T) => T,
     protected notSkipInvalid?: boolean,
+    protected buildVersion?: boolean,
     buildParam?: (i: number) => string,
   ) {
     this.write = this.write.bind(this)
     this.param = buildParam ? buildParam : param
-    const x = version(attributes)
-    if (x) {
-      this.version = x.name
+    if (buildVersion) {
+      const x = version(attributes)
+      if (x) {
+        this.version = x.name
+      }
     }
   }
   write(objs: T[]): Promise<number> {
@@ -557,7 +538,7 @@ export class OracleBatchInserter<T> {
       }
     }
     const stmt = buildToInsertBatch(list, this.table, this.attributes, this.version, this.notSkipInvalid, this.param)
-    if (stmt) {
+    if (stmt.query) {
       return execute(this.connection, stmt.query, stmt.params)
     } else {
       return Promise.resolve(0)
@@ -566,7 +547,6 @@ export class OracleBatchInserter<T> {
 }
 // tslint:disable-next-line:max-classes-per-file
 export class OracleWriter<T> {
-  protected version?: string
   protected param?: (i: number) => string
   constructor(
     protected connection: Connection,
@@ -578,10 +558,6 @@ export class OracleWriter<T> {
   ) {
     this.write = this.write.bind(this)
     this.param = buildParam ? buildParam : param
-    const x = version(attributes)
-    if (x) {
-      this.version = x.name
-    }
   }
   write(obj: T): Promise<number> {
     if (!obj) {
@@ -591,7 +567,7 @@ export class OracleWriter<T> {
     if (this.map) {
       obj2 = this.map(obj)
     }
-    const stmt = buildToSave(obj2, this.table, this.attributes, this.version, this.param)
+    const stmt = buildToSave(obj2, this.table, this.attributes, this.param)
     if (stmt) {
       if (this.oneIfSuccess) {
         return execute(this.connection, stmt.query, stmt.params).then((ct) => (ct > 0 ? 1 : 0))
@@ -604,9 +580,8 @@ export class OracleWriter<T> {
   }
 }
 // tslint:disable-next-line:max-classes-per-file
-export class OracleStreamWriter<T> {
-  list: T[] = []
-  version?: string
+export class OracleBufferedBatchWriterWriter<T> {
+  protected list: T[] = []
   protected param?: (i: number) => string
   constructor(
     protected connection: Connection | ((statements: Statement[]) => Promise<number>),
@@ -619,10 +594,6 @@ export class OracleStreamWriter<T> {
     this.write = this.write.bind(this)
     this.flush = this.flush.bind(this)
     this.param = buildParam
-    const x = version(attributes)
-    if (x) {
-      this.version = x.name
-    }
   }
   write(obj: T): Promise<number> {
     if (!obj) {
@@ -646,13 +617,14 @@ export class OracleStreamWriter<T> {
       return Promise.resolve(0)
     } else {
       const total = this.list.length
-      const stmt = buildToSaveBatch(this.list, this.table, this.attributes, this.version, this.param)
+      const stmt = buildToSaveBatch(this.list, this.table, this.attributes, this.param)
       if (stmt) {
         return executeBatch(this.connection as any, stmt).then((r) => {
           this.list = []
           return total
         })
       } else {
+        this.list = []
         return Promise.resolve(0)
       }
     }
@@ -660,8 +632,7 @@ export class OracleStreamWriter<T> {
 }
 // tslint:disable-next-line:max-classes-per-file
 export class OracleBatchWriter<T> {
-  version?: string
-  param?: (i: number) => string
+  protected param?: (i: number) => string
   constructor(
     protected connection: Connection,
     protected table: string,
@@ -671,10 +642,6 @@ export class OracleBatchWriter<T> {
   ) {
     this.write = this.write.bind(this)
     this.param = buildParam ? buildParam : param
-    const x = version(attributes)
-    if (x) {
-      this.version = x.name
-    }
   }
   write(objs: T[]): Promise<number> {
     if (!objs || objs.length === 0) {
@@ -688,7 +655,7 @@ export class OracleBatchWriter<T> {
         list.push(obj2)
       }
     }
-    const stmts = buildToSaveBatch(list, this.table, this.attributes, this.version, this.param)
+    const stmts = buildToSaveBatch(list, this.table, this.attributes, this.param)
     if (stmts && stmts.length > 0) {
       return executeBatch(this.connection, stmts)
     } else {
@@ -696,6 +663,65 @@ export class OracleBatchWriter<T> {
     }
   }
 }
+
+export interface AnyMap {
+  [key: string]: any
+}
+
+export interface HealthChecker {
+  name(): string
+  build(data: AnyMap, error: any): AnyMap
+  check(): Promise<AnyMap>
+}
+
+export class OracleChecker implements HealthChecker {
+  constructor(
+    protected readonly pool: Pool,
+    protected readonly checkerName = "oracle",
+    protected readonly timeout = 4500,
+  ) {}
+
+  name(): string {
+    return this.checkerName
+  }
+
+  build(data: AnyMap, error: any): AnyMap {
+    return {
+      name: this.name(),
+      status: "DOWN",
+      ...data,
+      error: error?.message ?? error,
+    }
+  }
+
+  async check(): Promise<AnyMap> {
+    let connection
+
+    try {
+      connection = await this.pool.getConnection()
+
+      connection.callTimeout = this.timeout
+
+      await connection.execute("SELECT 1 FROM DUAL")
+
+      return {
+        name: this.name(),
+        status: "UP",
+      }
+    } catch (error) {
+      return this.build({}, error)
+    } finally {
+      if (connection) {
+        try {
+          await connection.close()
+        } catch {
+          // Ignore connection release errors.
+        }
+      }
+    }
+  }
+}
+
 // tslint:disable-next-line:max-classes-per-file
 export class Exporter<T> {
   constructor(
@@ -774,7 +800,6 @@ export interface SimpleMap {
 }
 export interface FileWriter {
   write(chunk: string): boolean
-  flush?(cb?: () => void): void
   end?(cb?: () => void): void
 }
 export interface Formatter<T> {
@@ -840,10 +865,6 @@ export class ExportService<T> {
         }
         try {
           stream.destroy()
-
-          if (this.writer.flush) {
-            this.writer.flush()
-          }
 
           if (this.writer.end) {
             this.writer.end()
