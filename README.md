@@ -1,5 +1,692 @@
 # oracle-core
 
+`oracle-core` is a lightweight TypeScript database abstraction for Oracle Database built on top of the [`oracledb`](https://www.npmjs.com/package/oracledb) driver.
+
+It provides a small, consistent API for:
+
+* Oracle connection pools
+* Explicit transactions
+* Query and scalar operations
+* Batch execution
+* Result mapping
+* Boolean conversion
+* Parameter normalization
+* Optional object-to-JSON serialization
+
+The library intentionally keeps transaction control explicit.
+
+## Installation
+
+```bash
+npm install oracle-core oracledb
+```
+
+## Basic Usage
+
+```ts
+import oracledb from "oracledb"
+import { OracleManager } from "oracle-core"
+
+const pool = await oracledb.createPool({
+  user: "scott",
+  password: "tiger",
+  connectString: "localhost/XEPDB1"
+})
+
+const db = new OracleManager(pool)
+
+const users = await db.query<{
+  id: number
+  name: string
+}>(
+  "select id, name from users where status = :1",
+  ["ACTIVE"]
+)
+```
+
+## Oracle Parameters
+
+Oracle uses `:n` positional parameters.
+
+```ts
+db.param(1) // :1
+db.param(2) // :2
+db.param(3) // :3
+```
+
+Example:
+
+```ts
+const user = await db.queryOne<User>(
+  "select id, name from users where id = :1",
+  [100]
+)
+```
+
+## Transactions
+
+Transactions use an explicit connection and explicit `commit()` / `rollback()`.
+
+The recommended pattern is:
+
+```ts
+const tx = await db.beginTransaction()
+
+try {
+  await tx.execute(
+    "update users set name = :1 where id = :2",
+    ["John", 100]
+  )
+
+  await tx.execute(
+    "update user_audit set updated_at = :1 where user_id = :2",
+    [new Date(), 100]
+  )
+
+  await tx.commit()
+} catch (err) {
+  await tx.rollback()
+  throw err
+}
+```
+
+### Transaction lifecycle
+
+A transaction owns one Oracle connection.
+
+```text
+db.beginTransaction()
+        |
+        v
+OracleTransaction
+        |
+        +-- execute/query/...
+        |
+        +-- commit()   -> close connection
+        |
+        +-- rollback() -> close connection
+```
+
+After `commit()` or `rollback()`, the transaction is completed and cannot be used again.
+
+```ts
+await tx.commit()
+
+await tx.execute("select 1 from dual")
+// Error: Transaction has already been completed
+```
+
+### Failed commit
+
+`commit()` marks the transaction as completed before attempting the Oracle commit and always closes the connection.
+
+```ts
+async commit(): Promise<void> {
+  this.ensureActive()
+  this.completed = true
+
+  try {
+    await this.con.commit()
+  } finally {
+    await this.con.close()
+  }
+}
+```
+
+This is intentional. If Oracle reports an error during `COMMIT`, the final database outcome may be uncertain. The transaction is therefore not reused or rolled back through the abstraction after `commit()` has been attempted.
+
+## Important: Transaction Concurrency
+
+A transaction represents a single Oracle connection.
+
+Operations should be awaited sequentially:
+
+```ts
+await tx.execute(...)
+await tx.query(...)
+await tx.execute(...)
+```
+
+Do not execute multiple operations concurrently on the same transaction connection:
+
+```ts
+// Do not do this
+await Promise.all([
+  tx.execute(...),
+  tx.execute(...),
+  tx.query(...)
+])
+```
+
+## Queries
+
+### `query`
+
+```ts
+const users = await db.query<User>(
+  "select id, name from users",
+  []
+)
+```
+
+Returns an array. An empty result produces `[]`.
+
+### `queryOne`
+
+```ts
+const user = await db.queryOne<User>(
+  "select id, name from users where id = :1",
+  [100]
+)
+```
+
+Returns:
+
+```ts
+User | null
+```
+
+### `executeScalar`
+
+```ts
+const total = await db.executeScalar<number>(
+  "select count(*) from users"
+)
+```
+
+Returns the first column of the first row, or `null`.
+
+### `count`
+
+```ts
+const total = await db.count(
+  "select count(*) from users"
+)
+```
+
+Returns a number and converts `null` to `0`.
+
+## `execute`
+
+`execute()` executes a statement using a pooled connection.
+
+```ts
+await db.execute(
+  "begin my_procedure(:1); end;",
+  [100]
+)
+```
+
+The normal `execute()` method does **not** explicitly commit.
+
+For application DML that requires transaction control, use `beginTransaction()`:
+
+```ts
+const tx = await db.beginTransaction()
+
+try {
+  await tx.execute(
+    "update users set active = :1 where id = :2",
+    [1, 100]
+  )
+
+  await tx.commit()
+} catch (err) {
+  await tx.rollback()
+  throw err
+}
+```
+
+Do not assume that calling `db.execute()` by itself is equivalent to an explicit application transaction with commit/rollback semantics.
+
+## Batch Execution
+
+`executeBatch()` executes a group of statements as one internally managed transaction.
+
+```ts
+const affected = await db.executeBatch([
+  {
+    query: "insert into users(id, name) values (:1, :2)",
+    params: [1, "Alice"]
+  },
+  {
+    query: "insert into users(id, name) values (:1, :2)",
+    params: [2, "Bob"]
+  }
+])
+```
+
+On success:
+
+```text
+statement 1
+statement 2
+statement 3
+    |
+    v
+  COMMIT
+```
+
+If a statement fails:
+
+```text
+statement 1
+statement 2
+    |
+    X
+  ROLLBACK
+```
+
+### `requireFirstAffected`
+
+When `requireFirstAffected` is `true`, the first statement controls whether the remaining statements execute.
+
+```ts
+const affected = await db.executeBatch(
+  [
+    {
+      query: "update users set active = :1 where id = :2",
+      params: [1, 100]
+    },
+    {
+      query: "insert into user_log(user_id) values (:1)",
+      params: [100]
+    }
+  ],
+  true
+)
+```
+
+The behavior is:
+
+```text
+First statement
+      |
+      +-- rowsAffected > 0 --> execute remaining statements
+      |
+      +-- rowsAffected = 0 --> stop and commit
+```
+
+This is useful when later operations depend on the first statement affecting a row.
+
+## Batch Execution Inside an Existing Transaction
+
+Use `executeBatchTx()` when the transaction is owned by the caller.
+
+```ts
+const tx = await db.beginTransaction()
+
+try {
+  await tx.executeBatch([
+    {
+      query: "update users set active = :1 where id = :2",
+      params: [1, 100]
+    },
+    {
+      query: "insert into user_log(user_id) values (:1)",
+      params: [100]
+    }
+  ])
+
+  await tx.commit()
+} catch (err) {
+  await tx.rollback()
+  throw err
+}
+```
+
+`executeBatchTx()`:
+
+* does not commit
+* does not rollback
+* does not close the connection
+
+The caller remains responsible for the transaction lifecycle.
+
+## Statement
+
+Batch statements use:
+
+```ts
+export interface Statement {
+  query: string
+  params?: any[]
+}
+```
+
+Example:
+
+```ts
+const statements: Statement[] = [
+  {
+    query: "insert into users(id, name) values (:1, :2)",
+    params: [1, "Alice"]
+  },
+  {
+    query: "insert into users(id, name) values (:1, :2)",
+    params: [2, "Bob"]
+  }
+]
+```
+
+## Result Mapping
+
+Oracle column names can be mapped to application property names.
+
+```ts
+const users = await db.query<User>(
+  "select USER_ID, USER_NAME from users",
+  [],
+  {
+    USER_ID: "id",
+    USER_NAME: "name"
+  }
+)
+```
+
+Result:
+
+```ts
+[
+  {
+    id: 1,
+    name: "Alice"
+  }
+]
+```
+
+`query()` and `queryOne()` also support boolean conversion.
+
+## Boolean Mapping
+
+Oracle applications frequently represent booleans using values such as:
+
+```text
+1 / 0
+Y / N
+T / F
+true / false
+```
+
+The library can convert these values to JavaScript booleans.
+
+```ts
+const users = await db.query<User>(
+  "select id, enabled from users",
+  [],
+  undefined,
+  [
+    {
+      name: "enabled"
+    }
+  ]
+)
+```
+
+Without a custom mapping, the following values are treated as `true`:
+
+```text
+1
+T
+Y
+true
+```
+
+A custom true value can be supplied:
+
+```ts
+{
+  name: "enabled",
+  true: "Y"
+}
+```
+
+In that case only `"Y"` is treated as `true`.
+
+## Parameter Normalization
+
+The library normalizes parameters before sending them to Oracle.
+
+```ts
+undefined -> null
+null      -> null
+Date      -> Date
+object    -> object
+```
+
+Example:
+
+```ts
+await db.query(
+  "select * from users where deleted_at = :1",
+  [undefined]
+)
+```
+
+The undefined parameter is converted to `null`.
+
+## Object Serialization
+
+Objects can optionally be serialized using:
+
+```ts
+import { resource } from "oracle-core"
+
+resource.string = true
+```
+
+Then object parameters are converted using `JSON.stringify()`.
+
+Example:
+
+```ts
+resource.string = true
+
+await db.execute(
+  "insert into documents(id, data) values (:1, :2)",
+  [1, { name: "Alice", active: true }]
+)
+```
+
+The object parameter becomes a JSON string.
+
+The default is:
+
+```ts
+resource.string = false
+```
+
+## Metadata-Based Result Conversion
+
+Oracle query results are converted using Oracle metadata.
+
+For example:
+
+```sql
+select
+  USER_ID,
+  USER_NAME
+from users
+```
+
+is converted into objects using the metadata column names:
+
+```ts
+{
+  USER_ID: 1,
+  USER_NAME: "Alice"
+}
+```
+
+The mapping parameter can then transform the property names into application naming conventions.
+
+## Connection Management
+
+`OracleManager` obtains connections from the configured `oracledb.Pool`.
+
+Normal operations automatically close their connection when finished:
+
+```text
+OracleManager
+    |
+    +-- getConnection()
+           |
+           +-- execute/query
+           |
+           +-- close()
+```
+
+Transactions are different: the connection remains open until `commit()` or `rollback()`.
+
+This ensures pooled connections are returned after normal operations and completed transactions.
+
+## API
+
+### `Executor`
+
+```ts
+export interface Executor {
+  driver: string
+
+  param(i: number): string
+
+  execute(sql: string, args?: any[]): Promise<number>
+
+  executeBatch(
+    statements: Statement[],
+    requireFirstAffected?: boolean
+  ): Promise<number>
+
+  query<T>(
+    sql: string,
+    args?: any[],
+    m?: StringMap,
+    bools?: Attribute[]
+  ): Promise<T[]>
+
+  queryOne<T>(
+    sql: string,
+    args?: any[],
+    m?: StringMap,
+    bools?: Attribute[]
+  ): Promise<T | null>
+
+  executeScalar<T>(
+    sql: string,
+    args?: any[]
+  ): Promise<T | null>
+
+  count(
+    sql: string,
+    args?: any[]
+  ): Promise<number>
+}
+```
+
+### `Transaction`
+
+```ts
+export interface Transaction extends Executor {
+  commit(): Promise<void>
+  rollback(): Promise<void>
+}
+```
+
+### `DB`
+
+```ts
+export interface DB extends Executor {
+  beginTransaction(): Promise<Transaction>
+}
+```
+
+## Data Types
+
+The library defines the following logical data types:
+
+```ts
+export type DataType =
+  | "ObjectId"
+  | "date"
+  | "datetime"
+  | "time"
+  | "boolean"
+  | "number"
+  | "integer"
+  | "string"
+  | "text"
+  | "object"
+  | "array"
+  | "binary"
+  | "primitives"
+  | "booleans"
+  | "numbers"
+  | "integers"
+  | "strings"
+  | "dates"
+  | "datetimes"
+  | "times"
+```
+
+Attributes are represented by:
+
+```ts
+export interface Attribute {
+  name?: string
+  column?: string
+  type?: DataType
+  default?: string | number | Date | boolean
+  key?: boolean
+  noinsert?: boolean
+  noupdate?: boolean
+  version?: boolean
+  ignored?: boolean
+  true?: string | number
+  false?: string | number
+}
+```
+
+## Design Philosophy
+
+`oracle-core` intentionally provides a small abstraction over `oracledb`.
+
+It does not attempt to hide Oracle's transaction model.
+
+The preferred application pattern is:
+
+```text
+Normal read
+    |
+    +-- db.query()
+    +-- db.queryOne()
+    +-- db.executeScalar()
+    +-- db.count()
+
+Explicit transactional work
+    |
+    +-- db.beginTransaction()
+           |
+           +-- tx.execute()
+           +-- tx.query()
+           +-- tx.executeBatch()
+           +-- tx.commit()
+           +-- tx.rollback()
+
+Self-contained batch
+    |
+    +-- db.executeBatch()
+           |
+           +-- internal transaction
+```
+
+This keeps transaction ownership explicit and predictable.
+
+## License
+
+MIT
+
+# oracle-core
+
 A lightweight TypeScript database abstraction and SQL builder for Oracle Database using [`oracledb`](https://www.npmjs.com/package/oracledb).
 
 The library provides a consistent executor/transaction API, metadata-driven SQL generation, Oracle `MERGE`-based upsert support, batch operations, boolean conversion, version fields, and buffered file-import writers.
