@@ -788,7 +788,7 @@ when matched then
   update set name=:2
 when not matched then
   insert (id,name)
-  values (:1,:2)
+  values (:3,:4)
 ```
 
 When key values are absent, the builder generates an insert-oriented statement.
@@ -824,13 +824,13 @@ For inserts, `null` and `undefined` fall back to the configured attribute defaul
 A version attribute is initialized to `1` for new records:
 
 ```sql
-VERSION = 1
+version = 1
 ```
 
 For updates, the version is incremented:
 
 ```sql
-VERSION = VERSION + 1
+version = version + 1
 ```
 
 The version field therefore acts as a revision counter.
@@ -868,7 +868,7 @@ false → 0
 The low-level `execute()` helper executes a statement and returns `rowsAffected`:
 
 ```ts
-const affected = await execute(
+const rowsAffected = await execute(
   connection,
   sql,
   params
@@ -1100,7 +1100,7 @@ interface Formatter<T> {
 
 interface FileWriter {
   write(chunk: string): boolean
-  end?(cb?: () => void): void
+  end(cb?: () => void): void
 }
 ```
 
@@ -1266,7 +1266,7 @@ export interface DB extends Executor {
 `executeBatch()` manages the transaction lifecycle:
 
 ```ts
-const affected = await executeBatch(
+const affectedRows = await executeBatch(
   connection,
   statements
 )
