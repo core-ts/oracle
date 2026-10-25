@@ -25,7 +25,7 @@ npm install oracledb oracle-core
 
 ```ts
 import oracledb from "oracledb"
-import { OracleManager } from "oracle-core"
+import { PoolManager } from "oracle-core"
 
 const pool = await oracledb.createPool({
   user: "scott",
@@ -33,7 +33,7 @@ const pool = await oracledb.createPool({
   connectString: "localhost/XEPDB1"
 })
 
-const db = new OracleManager(pool)
+const db = new PoolManager(pool)
 
 interface User {
   id: number
@@ -81,6 +81,26 @@ const user = await db.queryOne<User>(
   [100]
 )
 ```
+
+## Connection Management
+
+`PoolManager` obtains connections from the configured `oracledb.Pool`.
+
+Normal operations automatically close their connection when finished:
+
+```text
+PoolManager
+    |
+    +-- getConnection()
+           |
+           +-- execute/query
+           |
+           +-- close()
+```
+
+Transactions are different: the connection remains open until `commit()` or `rollback()`.
+
+This ensures pooled connections are returned after normal operations and completed transactions.
 
 ## Transactions
 
@@ -276,6 +296,33 @@ Do not assume that calling `db.execute()` by itself is equivalent to an explicit
 
 ## Batch Execution
 
+### Statement
+
+Batch statements use:
+
+```ts
+export interface Statement {
+  query: string
+  params?: any[]
+}
+```
+
+Example:
+
+```ts
+const statements: Statement[] = [
+  {
+    query: "insert into users(id, name) values (:1, :2)",
+    params: [1, "Alice"]
+  },
+  {
+    query: "insert into users(id, name) values (:1, :2)",
+    params: [2, "Bob"]
+  }
+]
+```
+
+### `executeBatch`
 `executeBatch()` executes a group of statements as one internally managed transaction.
 
 ```ts
@@ -413,31 +460,18 @@ try {
 
 The caller remains responsible for the transaction lifecycle.
 
-## Statement
+## Connection and Transaction Ownership
 
-Batch statements use:
+The execution helpers intentionally have different ownership models:
 
-```ts
-export interface Statement {
-  query: string
-  params?: any[]
-}
-```
+| Function           | Transaction         | Commit/Rollback                    | Close Connection |
+| ------------------ | ------------------- | ---------------------------------- | ---------------- |
+| `execute()`        | Direct execution    | No application-managed transaction | Yes              |
+| `executeTx()`      | Caller controlled   | No                                 | No               |
+| `executeBatch()`   | Function controlled | Yes                                | Yes              |
+| `executeBatchTx()` | Caller controlled   | No                                 | No               |
 
-Example:
-
-```ts
-const statements: Statement[] = [
-  {
-    query: "insert into users(id, name) values (:1, :2)",
-    params: [1, "Alice"]
-  },
-  {
-    query: "insert into users(id, name) values (:1, :2)",
-    params: [2, "Bob"]
-  }
-]
-```
+This separation allows simple execution helpers and explicit transaction management to coexist.
 
 --- 
 
@@ -484,29 +518,34 @@ T / F
 true / false
 ```
 
-The library can convert these values to JavaScript booleans.
-
+### Without Boolean Mapping
 ```ts
 const users = await db.query<User>(
-  "select id, enabled from users",
-  [],
-  undefined,
-  [
-    {
-      name: "enabled"
-    }
-  ]
+  "select id, name, enabled from users",
+  []
 )
 ```
 
-Without a custom mapping, the following values are treated as `true`:
+Result:
 
-```text
-1
-T
-Y
-true
+```ts
+[
+  {
+    id: 1,
+    name: "Alice",
+    enabled: "Y"
+  },
+  {
+    id: 2,
+    name: "Bob",
+    enabled: "Y"
+  }
+]
 ```
+
+### With Boolean Mapping
+
+The library can convert these values to JavaScript booleans.
 
 A custom true value can be supplied:
 
@@ -518,6 +557,46 @@ A custom true value can be supplied:
 ```
 
 In that case only `"Y"` is treated as `true`.
+
+```ts
+const users = await db.query<User>(
+  "select id, name, enabled from users",
+  [],
+  undefined,
+  [
+    {
+      name: "enabled",
+      true: "Y"
+    }
+  ]
+)
+```
+
+Result:
+
+```ts
+[
+  {
+    id: 1,
+    name: "Alice",
+    enabled: true
+  },
+  {
+    id: 2,
+    name: "Bob",
+    enabled: true
+  }
+]
+```
+
+Without a custom mapping, the following values are treated as `true`:
+
+```text
+1
+T
+Y
+true
+```
 
 ## Parameter Normalization
 
@@ -596,26 +675,6 @@ is converted into objects using the metadata column names:
 
 The mapping parameter can then transform the property names into application naming conventions.
 
-## Connection Management
-
-`OracleManager` obtains connections from the configured `oracledb.Pool`.
-
-Normal operations automatically close their connection when finished:
-
-```text
-OracleManager
-    |
-    +-- getConnection()
-           |
-           +-- execute/query
-           |
-           +-- close()
-```
-
-Transactions are different: the connection remains open until `commit()` or `rollback()`.
-
-This ensures pooled connections are returned after normal operations and completed transactions.
-
 ## API
 
 ### `Executor`
@@ -626,8 +685,8 @@ export interface Executor {
   param(i: number): string
   execute(sql: string, args?: any[]): Promise<number>
   executeBatch(statements: Statement[], requireFirstAffected?: boolean): Promise<number>
-  query<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T[]>
-  queryOne<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T | null>
+  query<T>(sql: string, args?: any[], map?: StringMap, bools?: Attribute[]): Promise<T[]>
+  queryOne<T>(sql: string, args?: any[], map?: StringMap, bools?: Attribute[]): Promise<T | null>
   executeScalar<T>(sql: string, args?: any[]): Promise<T | null>
   count(sql: string, args?: any[]): Promise<number>
 }
@@ -793,6 +852,40 @@ when not matched then
 
 When key values are absent, the builder generates an insert-oriented statement.
 
+--- 
+
+## Version Columns
+
+A version attribute is initialized to `1` for new records:
+
+```sql
+version = 1
+```
+
+For updates, the version is incremented:
+
+```sql
+version = version + 1
+```
+
+The version field therefore acts as a revision counter.
+
+It does not by itself provide optimistic-lock conflict detection; the `MERGE` condition is based on the configured key fields.
+
+
+## Numeric Values
+
+`toString()` converts finite numbers to SQL numeric literals.
+
+```ts
+toString(123)       // "123"
+toString(12.5)      // "12.5"
+toString(NaN)       // "null"
+toString(Infinity)  // "null"
+```
+
+Non-finite numeric values are represented as SQL `NULL`.
+
 ## Null and Undefined
 
 Updates distinguish between `undefined` and `null`.
@@ -819,49 +912,20 @@ NAME = null
 
 For inserts, `null` and `undefined` fall back to the configured attribute default when one exists.
 
-## Version Columns
+## Trusted Metadata
 
-A version attribute is initialized to `1` for new records:
-
-```sql
-version = 1
-```
-
-For updates, the version is incremented:
-
-```sql
-version = version + 1
-```
-
-The version field therefore acts as a revision counter.
-
-It does not by itself provide optimistic-lock conflict detection; the `MERGE` condition is based on the configured key fields.
-
-## Boolean Mapping
-
-Boolean properties can be mapped to Oracle-compatible values:
+Table and column names are inserted directly into generated SQL:
 
 ```ts
-active: {
-  type: "boolean",
-  true: 1,
-  false: 0
-}
+table
+attr.column
 ```
 
-The following values are then bound:
+Therefore table and column metadata must come from trusted application configuration.
 
-```ts
-true  → 1
-false → 0
-```
+Values should always be supplied through bind parameters rather than string concatenation.
 
-When no explicit mapping is supplied, the implementation uses:
-
-```text
-true  → 1
-false → 0
-```
+---
 
 ## Execution
 
@@ -881,6 +945,66 @@ The helper owns the supplied Oracle connection for this operation and closes it 
 
 For transactional DML, use the Oracle driver/transaction APIs directly or the transaction-specific helpers.
 
+## Transactions
+
+### Execute and own the transaction
+
+`executeBatch()` manages the transaction lifecycle:
+
+```ts
+const affectedRows = await executeBatch(
+  connection,
+  statements
+)
+```
+
+The operation:
+
+1. Executes all statements with `autoCommit: false`
+2. Commits when all statements succeed
+3. Rolls back when an error occurs
+4. Closes the connection
+
+### Transaction-controlled execution
+
+`executeBatchTx()` does not commit, rollback, or close the connection.
+
+This allows the caller to manage the transaction:
+
+```ts
+try {
+  await executeBatchTx(connection, statements)
+
+  await connection.commit()
+} catch (err) {
+  await connection.rollback()
+  throw err
+}
+```
+
+## `requireFirstAffected`
+
+Batch execution can optionally require the first statement to affect at least one row:
+
+```ts
+await executeBatch(
+  connection,
+  statements,
+  true
+)
+```
+
+When enabled:
+
+```text
+first statement affected rows > 0
+    → execute the remaining statements
+
+first statement affected rows = 0
+    → stop execution
+```
+
+This is useful for dependent multi-step operations.
 
 --- 
 
@@ -990,45 +1114,6 @@ const writer = new BatchWriter(
 ```
 
 This is useful when the input representation differs from the database representation.
-
-## Numeric Values
-
-`toString()` converts finite numbers to SQL numeric literals.
-
-```ts
-toString(123)       // "123"
-toString(12.5)      // "12.5"
-toString(NaN)       // "null"
-toString(Infinity)  // "null"
-```
-
-Non-finite numeric values are represented as SQL `NULL`.
-
-## Trusted Metadata
-
-Table and column names are inserted directly into generated SQL:
-
-```ts
-table
-attr.column
-```
-
-Therefore table and column metadata must come from trusted application configuration.
-
-Values should always be supplied through bind parameters rather than string concatenation.
-
-## Connection and Transaction Ownership
-
-The execution helpers intentionally have different ownership models:
-
-| Function           | Transaction         | Commit/Rollback                    | Close Connection |
-| ------------------ | ------------------- | ---------------------------------- | ---------------- |
-| `execute()`        | Direct execution    | No application-managed transaction | Yes              |
-| `executeTx()`      | Caller controlled   | No                                 | No               |
-| `executeBatch()`   | Function controlled | Yes                                | Yes              |
-| `executeBatchTx()` | Caller controlled   | No                                 | No               |
-
-This separation allows simple execution helpers and explicit transaction management to coexist.
 
 ---
 
@@ -1188,6 +1273,52 @@ Self-contained batch
 
 This keeps transaction ownership explicit and predictable.
 
+
+## Architecture
+
+The package is intentionally small and focused around an `Executor` abstraction:
+
+```text
+                      oracle-core
+                           │
+              ┌────────────┴────────────┐
+              │                         │
+        PoolManager               SQL Builders
+              │                         │
+              │                    Attributes
+              │                         │
+      ┌───────┴────────┐           buildToSave
+      │                │        buildToInsertBatch
+    Query         Transaction    buildToSaveBatch
+      │                │
+      └───────┬────────┘
+              │
+        node-oracledb
+              │
+          Oracle DB
+```
+
+Additional capabilities build on the same metadata and execution model:
+
+```text
+Metadata
+   │
+   ├── Persistence
+   │     ├── save
+   │     ├── insertBatch
+   │     └── saveBatch
+   │
+   ├── Query mapping
+   │
+   └── Export
+         └── ExportService
+
+Oracle Pool
+   ├── PoolManager
+   ├── BufferedBatchWriter
+   └── OracleChecker
+```
+
 ## License
 
 MIT
@@ -1258,67 +1389,6 @@ export interface DB extends Executor {
   beginTransaction(): Promise<Transaction>
 }
 ```
-
-## Transactions
-
-### Execute and own the transaction
-
-`executeBatch()` manages the transaction lifecycle:
-
-```ts
-const affectedRows = await executeBatch(
-  connection,
-  statements
-)
-```
-
-The operation:
-
-1. Executes all statements with `autoCommit: false`
-2. Commits when all statements succeed
-3. Rolls back when an error occurs
-4. Closes the connection
-
-### Transaction-controlled execution
-
-`executeBatchTx()` does not commit, rollback, or close the connection.
-
-This allows the caller to manage the transaction:
-
-```ts
-try {
-  await executeBatchTx(connection, statements)
-
-  await connection.commit()
-} catch (err) {
-  await connection.rollback()
-  throw err
-}
-```
-
-## `requireFirstAffected`
-
-Batch execution can optionally require the first statement to affect at least one row:
-
-```ts
-await executeBatch(
-  connection,
-  statements,
-  true
-)
-```
-
-When enabled:
-
-```text
-first statement affected rows > 0
-    → execute the remaining statements
-
-first statement affected rows = 0
-    → stop execution
-```
-
-This is useful for dependent multi-step operations.
 
 ## Design Philosophy
 
@@ -1433,13 +1503,13 @@ interface DB extends Executor {
 
 This keeps application code independent from the Oracle connection-pool implementation.
 
-## OracleManager
+## PoolManager
 
-Create an `OracleManager` from a `node-oracledb` connection pool.
+Create an `PoolManager` from a `node-oracledb` connection pool.
 
 ```ts
 import oracledb from "oracledb"
-import { OracleManager } from "oracle-core"
+import { PoolManager } from "oracle-core"
 
 const pool = await oracledb.createPool({
   user: "app",
@@ -1447,7 +1517,7 @@ const pool = await oracledb.createPool({
   connectString: "localhost/XEPDB1",
 })
 
-const db = new OracleManager(pool)
+const db = new PoolManager(pool)
 ```
 
 ### Query
@@ -1969,51 +2039,6 @@ params(3)
 
 A custom parameter builder can be supplied when integrating the SQL builders with another abstraction.
 
-## Architecture
-
-The package is intentionally small and focused around an `Executor` abstraction:
-
-```text
-                    oracle-core
-                         │
-              ┌──────────┴──────────┐
-              │                     │
-        OracleManager          SQL Builders
-              │                     │
-              │                Attributes
-              │                     │
-      ┌───────┴────────┐       buildToSave
-      │                │       buildToInsertBatch
-    Query           Transaction buildToSaveBatch
-      │                │
-      └───────┬────────┘
-              │
-       node-oracledb
-              │
-           Oracle DB
-```
-
-Additional capabilities build on the same metadata and execution model:
-
-```text
-Metadata
-   │
-   ├── Persistence
-   │     ├── save
-   │     ├── insertBatch
-   │     └── saveBatch
-   │
-   ├── Query mapping
-   │
-   └── Export
-         └── ExportService
-
-Oracle Pool
-   ├── OracleManager
-   ├── BufferedBatchWriter
-   └── OracleChecker
-```
-
 ## Connection ownership
 
 When using the low-level functions that accept a `Connection`, the caller should treat the connection as an explicitly managed resource.
@@ -2030,7 +2055,7 @@ try {
 }
 ```
 
-For pool-based operations, `OracleManager` acquires a connection internally.
+For pool-based operations, `PoolManager` acquires a connection internally.
 
 For transactions, `OracleTransaction` owns the transaction connection until `commit()` or `rollback()`.
 

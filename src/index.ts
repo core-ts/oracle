@@ -77,7 +77,7 @@ export class OracleTransaction implements Transaction {
     return countTx(this.con, sql, args)
   }
 }
-export class OracleManager implements DB {
+export class PoolManager implements DB {
   constructor(protected pool: Pool) {
     this.param = this.param.bind(this)
     this.execute = this.execute.bind(this)
@@ -241,7 +241,7 @@ export function executeScalarTx<T>(con: Connection, sql: string, args?: any[]): 
   })
 }
 export function countTx(con: Connection, sql: string, args?: any[]): Promise<number> {
-  return executeScalarTx<number>(con, sql, args).then((res) => (res !== null ? res : 0))
+  return executeScalarTx<number>(con, sql, args).then((res) => (res !== null ? Number(res) : 0))
 }
 
 export function execute(con: Connection, sql: string, args?: any[]): Promise<number> {
@@ -288,7 +288,7 @@ export function executeScalar<T>(con: Connection, sql: string, args?: any[]): Pr
   })
 }
 export function count(con: Connection, sql: string, args?: any[]): Promise<number> {
-  return executeScalar<number>(con, sql, args).then((res) => (res !== null ? res : 0))
+  return executeScalar<number>(con, sql, args).then((res) => (res !== null ? Number(res) : 0))
 }
 
 export function insertBatch<T>(con: Connection | ((sql: string, args?: any[]) => Promise<number>), objs: T[], table: string, attrs: Attributes, ver?: string, notSkipInvalid?: boolean, buildParam?: (i: number) => string): Promise<number> {
