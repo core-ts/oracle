@@ -296,18 +296,16 @@ Do not assume that calling `db.execute()` by itself is equivalent to an explicit
 
 ## Batch Execution
 
-### Statement
-
-Batch statements use:
+Statements are represented by:
 
 ```ts
-export interface Statement {
+interface Statement {
   query: string
   params?: any[]
 }
 ```
 
-Example:
+`executeBatch()` executes a group of statements as one internally managed transaction.
 
 ```ts
 const statements: Statement[] = [
@@ -320,22 +318,8 @@ const statements: Statement[] = [
     params: [2, "Bob"]
   }
 ]
-```
 
-### `executeBatch`
-`executeBatch()` executes a group of statements as one internally managed transaction.
-
-```ts
-const affectedRows = await db.executeBatch([
-  {
-    query: "insert into users(id, name) values (:1, :2)",
-    params: [1, "Alice"]
-  },
-  {
-    query: "insert into users(id, name) values (:1, :2)",
-    params: [2, "Bob"]
-  }
-])
+const affectedRows = await db.executeBatch(statements)
 ```
 
 On success:
@@ -403,11 +387,11 @@ const affectedRows = await db.executeBatch(
   [
     {
       query: "update users set status = :1 where id = :2",
-      params: ["ACTIVE", 100]
+      params: ["ACTIVE", 10]
     },
     {
-      query: "insert into user_log(user_id) values (:1)",
-      params: [100]
+      query: "insert into audit_logs(user_id, action) values (:1, :2)",
+      params: [10, "activate"]
     }
   ],
   true
@@ -437,11 +421,11 @@ try {
   await tx.executeBatch([
     {
       query: "update users set status = :1 where id = :2",
-      params: ["ACTIVE", 100]
+      params: ["ACTIVE", 10]
     },
     {
-      query: "insert into user_log(user_id) values (:1)",
-      params: [100]
+      query: "insert into audit_logs(user_id, action) values (:1, :2)",
+      params: [10, "activate"]
     }
   ])
 
@@ -651,29 +635,135 @@ The default is:
 resource.string = false
 ```
 
-## Metadata-Based Result Conversion
+## Dynamic SQL Field Helpers
 
-Oracle query results are converted using Oracle metadata.
+### `getFields()`
 
-For example:
-
-```sql
-select
-  USER_ID,
-  USER_NAME
-from users
-```
-
-is converted into objects using the metadata column names:
+`getFields()` optionally filters a requested field list against an allowed list.
 
 ```ts
-{
-  USER_ID: 1,
-  USER_NAME: "Alice"
-}
+const fields = getFields(
+  ["id", "name", "invalid"],
+  ["id", "name", "email"]
+)
 ```
 
-The mapping parameter can then transform the property names into application naming conventions.
+The resulting fields are:
+```text
+id
+name
+```
+
+### `buildFields()`
+
+`buildFields()` produces a comma-separated SQL field list.
+
+```ts
+const sqlFields = buildFields(
+  ["id", "name", "invalid"],
+  ["id", "name", "email"]
+)
+```
+
+Result:
+
+```text
+id,name
+```
+
+When no valid fields are available, `buildFields()` returns:
+
+```text
+*
+```
+
+Dynamic field names should still come from trusted or validated input because SQL parameters cannot be used for identifiers.
+
+```ts
+SELECT ${buildFields(fields, allowedFields)}
+FROM users
+```
+For example:
+```ts
+SELECT ${buildFields(["id", "name", "password", "status"], ["id", "name", "status"])}
+FROM users
+```
+
+returns:
+
+```ts
+SELECT id, name, status
+FROM users
+```
+
+### `getMapField()`
+
+`getMapField()` returns a mapped field name when a mapping exists:
+
+```ts
+const field = getMapField(
+  "user_id",
+  {
+    user_id: "id"
+  }
+)
+```
+
+Result:
+
+```text
+id
+```
+
+
+## Example
+
+A simple repository-style implementation can be built on top of `DB`:
+
+```ts
+import { DB } from "oracle-core"
+
+export interface User {
+  id: number
+  name: string
+  active: boolean
+}
+
+export class UserRepository {
+  constructor(private readonly db: DB) {}
+
+  findById(id: number): Promise<User | null> {
+    return this.db.queryOne<User>(
+      "SELECT id, name, active FROM users WHERE id = :1",
+      [id],
+      undefined,
+      [
+        {
+          name: "active"
+        }
+      ]
+    )
+  }
+  countActive(): Promise<number> {
+    return this.db.count(
+      "SELECT COUNT(*) FROM users WHERE active = :1",
+      [1]
+    )
+  }
+  createUser(user: User): Promise<number> {
+    return this.db.execute(
+      "insert into users (id, name, active) values (:1, :2, :3)",
+      [user.id, user.name, user.active ? 1 : 0]
+    )
+  }
+  updateName(id: number, name: string): Promise<number> {
+    return this.db.execute(
+      "UPDATE users SET name = :1 WHERE id = :2",
+      [name, id]
+    )
+  }
+}
+```
 
 ## API
 
