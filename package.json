@@ -1,6 +1,6 @@
 {
   "name": "oracle-core",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Oracle",
   "main": "./lib/index.js",
   "types": "./src/index.ts",

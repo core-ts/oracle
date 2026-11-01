@@ -4,15 +4,25 @@
 
 It provides a small, consistent API for:
 
-* Oracle connection pools
-* Explicit transactions
-* Query and scalar operations
-* Batch execution
-* Result mapping
-* Boolean conversion
-* Parameter normalization
-* Optional object-to-JSON serialization
 
+* Simple `DB` / `Transaction` abstraction
+  * Oracle connection-pool integration
+  * Explicit transaction support
+  * Query, single-row, scalar, and count operations
+* Parameterized SQL execution
+  * Custom bind-parameter builders
+  * Parameter normalization
+  * Optional object-to-string serialization
+* Column/property mapping
+  * Boolean conversion
+* Metadata-driven `insert` and `save` operations
+  * Optimistic version-field support
+* Oracle `MERGE` support for save/upsert operations
+* Batch insert and batch save
+* Buffered batch writing
+* Streaming export
+* Oracle health checking
+* 
 The library intentionally keeps transaction control explicit.
 
 ## Installation
@@ -82,6 +92,58 @@ const user = await db.queryOne<User>(
 )
 ```
 
+## Database API
+
+`Executor` defines the common database API
+
+```text
+                    Executor
+                       │
+             ┌─────────┴─────────┐
+             │                   │
+            DB              Transaction        (oracle-core interfaces)
+             │                   │
+        PoolManager       ConnectionManager    (oracle-core classes)
+             │                   │
+           Pool              Connection        (node-oracledb)
+             │                   │
+             └─────────┬─────────┘
+                       │
+                  Oracle DB
+```
+
+### `Executor`
+
+```ts
+interface Executor {
+  driver: string
+  param(i: number): string
+  execute(sql: string, args?: any[]): Promise<number>
+  executeBatch(statements: Statement[], requireFirstAffected?: boolean): Promise<number>
+  query<T>(sql: string, args?: any[], map?: StringMap, bools?: Attribute[]): Promise<T[]>
+  queryOne<T>(sql: string, args?: any[], map?: StringMap, bools?: Attribute[]): Promise<T | null>
+  executeScalar<T>(sql: string, args?: any[]): Promise<T | null>
+  count(sql: string, args?: any[]): Promise<number>
+}
+```
+
+### `Transaction`
+
+```ts
+interface Transaction extends Executor {
+  commit(): Promise<void>
+  rollback(): Promise<void>
+}
+```
+
+### `DB`
+
+```ts
+interface DB extends Executor {
+  beginTransaction(): Promise<Transaction>
+}
+```
+
 ## Connection Management
 
 `PoolManager` obtains connections from the configured `oracledb.Pool`.
@@ -137,7 +199,7 @@ A transaction owns one Oracle connection.
 db.beginTransaction()
         |
         v
-OracleTransaction
+ConnectionManager
         |
         +-- execute/query/...
         |
@@ -765,41 +827,6 @@ export class UserRepository {
 }
 ```
 
-## API
-
-### `Executor`
-
-```ts
-export interface Executor {
-  driver: string
-  param(i: number): string
-  execute(sql: string, args?: any[]): Promise<number>
-  executeBatch(statements: Statement[], requireFirstAffected?: boolean): Promise<number>
-  query<T>(sql: string, args?: any[], map?: StringMap, bools?: Attribute[]): Promise<T[]>
-  queryOne<T>(sql: string, args?: any[], map?: StringMap, bools?: Attribute[]): Promise<T | null>
-  executeScalar<T>(sql: string, args?: any[]): Promise<T | null>
-  count(sql: string, args?: any[]): Promise<number>
-}
-```
-
-### `Transaction`
-
-```ts
-export interface Transaction extends Executor {
-  commit(): Promise<void>
-  rollback(): Promise<void>
-}
-```
-
-### `DB`
-
-```ts
-export interface DB extends Executor {
-  beginTransaction(): Promise<Transaction>
-}
-```
-
-
 ## Attribute Metadata
 
 Database mappings are defined using `Attribute` objects:
@@ -892,6 +919,76 @@ export interface Attribute {
 | `true`     | Database representation of boolean `true`             |
 | `false`    | Database representation of boolean `false`            |
 
+### Primary keys
+
+Mark one or more attributes as keys:
+
+```ts
+const attributes: Attributes = {
+  id: {
+    key: true,
+  },
+}
+```
+
+Multiple key fields are supported:
+
+```ts
+const attributes: Attributes = {
+  tenantId: {
+    key: true,
+    column: "TENANT_ID",
+  },
+  userId: {
+    key: true,
+    column: "USER_ID",
+  },
+}
+```
+
+## Version fields
+
+An attribute can be marked as the version field:
+
+```ts
+const attributes: Attributes = {
+  id: {
+    key: true,
+  },
+
+  name: {},
+
+  version: {
+    type: "integer",
+    version: true,
+  },
+}
+```
+
+A version attribute is initialized to `1` for new records:
+
+```sql
+version = 1
+```
+
+When updating an existing object, the version value is used as an optimistic-lock check and the stored version is incremented.
+
+CRUDRepository in [`sql-core`](https://www.npmjs.com/package/sql-core) fully supports optimistic locking.
+
+Conceptually, the generated SQL follows this pattern:
+
+```sql
+update users
+set name = :1,
+    version = users.version + 1
+where id = :2
+  and version = 7
+```
+
+This allows applications to detect stale updates.
+
+It does not by itself provide optimistic-lock conflict detection; the `MERGE` condition is based on the configured key fields.
+
 ---
 
 ## Insert Batch
@@ -943,25 +1040,6 @@ when not matched then
 When key values are absent, the builder generates an insert-oriented statement.
 
 --- 
-
-## Version Columns
-
-A version attribute is initialized to `1` for new records:
-
-```sql
-version = 1
-```
-
-For updates, the version is incremented:
-
-```sql
-version = version + 1
-```
-
-The version field therefore acts as a revision counter.
-
-It does not by itself provide optimistic-lock conflict detection; the `MERGE` condition is based on the configured key fields.
-
 
 ## Numeric Values
 
@@ -1129,16 +1207,63 @@ const writer = new OracleWriter(
   attributes
 )
 
-await writer.write(user)
+const user = {
+  id: 1,
+  name: "John",
+  active: true
+}
+const count = await writer.write(user)
 ```
 
-An optional mapping function can transform the object before persistence.
-
-`oneIfSuccess` can normalize the result to:
+The operation is:
 
 ```text
-0 = no rows affected
-1 = one or more rows affected
+write()
+  │
+  ├── map()
+  │
+  ▼
+buildToSave()
+  │
+  ▼
+execute()
+```
+
+#### Mapping
+
+A mapping function can transform the object before the SQL statement is created:
+
+```ts
+const writer = new MySQLWriter(
+  pool,
+  "users",
+  attributes,
+  false,
+  (user) => ({
+    ...user,
+    name: user.name.trim()
+  })
+)
+```
+
+#### `oneIfSuccess`
+
+When `oneIfSuccess` is enabled, the result is normalized to `0` or `1`:
+
+```ts
+const writer = new MySQLWriter(
+  pool,
+  "users",
+  attributes,
+  true
+)
+```
+
+The result becomes:
+
+```text
+0 → zero affected rows
+1 → one or more affected rows
 ```
 
 ### BatchWriter
@@ -1152,42 +1277,24 @@ const writer = new BatchWriter(
   attributes
 )
 
-await writer.write(users)
+const users = [
+  {
+    id: 1,
+    name: "John",
+    active: true
+  },
+  {
+    id: 2,
+    name: "Jane",
+    active: true
+  }
+]
+const count = await writer.write(users)
 ```
 
 Each object becomes an individual `MERGE` statement executed as part of the batch transaction.
 
-### BufferedBatchWriter
-
-Designed primarily for **sequential file-import workflows**.
-
-```ts
-const writer = new BufferedBatchWriter(
-  pool,
-  "users",
-  attributes,
-  5000
-)
-
-for (const row of rows) {
-  await writer.write(row)
-}
-
-await writer.flush()
-```
-
-Objects are accumulated until the configured batch size is reached.
-
-The writer then:
-
-1. Builds the batch
-2. Obtains a connection from the pool
-3. Executes the batch transaction
-4. Clears the successfully written buffer
-
-The class is intended for sequential import processing, where one writer instance is owned by one import operation.
-
-## Mapping Imported Objects
+### Mapping Imported Objects
 
 All writer classes that support mapping accept a transformation function:
 
@@ -1204,6 +1311,65 @@ const writer = new BatchWriter(
 ```
 
 This is useful when the input representation differs from the database representation.
+
+### BufferedBatchWriter
+
+Designed primarily for **sequential file-import workflows**.
+
+```ts
+const writer = new BufferedBatchWriter(
+  pool,
+  "users",
+  attributes,
+  5000
+)
+
+for (const user of users) {
+  await writer.write(user
+}
+
+await writer.flush()
+```
+The default size is `5000`.
+
+The execution flow is:
+
+```text
+write()
+   │
+   ▼
+buffer
+   │
+   ├── buffer < size ──► wait
+   │
+   └── buffer >= size
+             │
+             ▼
+           flush()
+             │
+             ▼
+      buildToSaveBatch()
+             │
+             ▼
+        executeBatch()
+```
+
+The final buffered records must be flushed explicitly:
+
+```ts
+await writer.flush()
+```
+
+Objects are accumulated until the configured batch size is reached.
+
+The writer then:
+
+1. Builds the batch
+2. Obtains a connection from the pool
+3. Executes the batch transaction
+4. Clears the successfully written buffer
+
+The class is intended for sequential import processing, where one writer instance is owned by one import operation.
 
 ---
 
@@ -1249,15 +1415,15 @@ const count = await service.export()
 The export pipeline is:
 
 ```text
-Oracle queryStream()
-       ↓
-row metadata
-       ↓
+   Oracle queryStream()
+            ↓
+      row metadata
+            ↓
 convert to application object
-       ↓
-Formatter
-       ↓
-FileWriter
+            ↓
+        Formatter
+            ↓
+        FileWriter
 ```
 
 Progress logging can be enabled with `progressSize` and `logInfo`.
@@ -1328,9 +1494,22 @@ This makes `OracleChecker` suitable for application health endpoints and Kuberne
 
 --- 
 
+
 ## Design Philosophy
 
 `oracle-core` intentionally provides a small abstraction over `oracledb`.
+
+It does not attempt to replace Oracle's native driver APIs. Instead, it provides:
+
+```text
+  TypeScript abstraction
+            +
+metadata-driven SQL generation
+            +
+Oracle-specific execution helpers
+            +
+  batch/import utilities
+```
 
 It does not attempt to hide Oracle's transaction model.
 
@@ -1363,6 +1542,7 @@ Self-contained batch
 
 This keeps transaction ownership explicit and predictable.
 
+Applications can therefore use the high-level helpers for common persistence and import scenarios while retaining access to the native `oracledb` connection and transaction APIs when more advanced Oracle features are required.
 
 ## Architecture
 
@@ -1409,6 +1589,36 @@ Oracle Pool
    └── OracleChecker
 ```
 
+## Ecosystem
+[`oracle-core`](https://www.npmjs.com/package/oracle-core) can work with [`sql-core`](https://www.npmjs.com/package/sql-core) and [`query-mappers`](https://www.npmjs.com/package/query-mappers). They separate responsibilities into independent layers.
+
+* SQL generation belongs to [`sql-core`](https://www.npmjs.com/package/sql-core)
+* Object mapping belongs to [`query-mappers`](https://www.npmjs.com/package/query-mappers)
+* Oracle execution belongs to [`oracle-core`](https://www.npmjs.com/package/oracle-core)
+
+This architecture keeps applications lightweight, modular, and easy to maintain.
+
+```text
+ Application
+      │
+      ▼
+ Repository (sql-core)
+      │
+      ▼
+ oracle-core
+      │
+      ▼
+  Oracle DB
+```
+
+### Responsibilities
+
+| Package                                                         | Responsibility                                                      |
+|-----------------------------------------------------------------|---------------------------------------------------------------------|
+| [`oracle-core`](https://www.npmjs.com/package/oracle-core)      | Oracle execution, repositories, writers, streaming, health checks   |
+| [`sql-core`](https://www.npmjs.com/package/sql-core)            | Database-independent repositories, CRUD, SQL builders, transactions |
+| [`query-mappers`](https://www.npmjs.com/package/query-mappers)  | Maps database rows to TypeScript models                             
+
 ## License
 
 MIT
@@ -1444,60 +1654,6 @@ npm install oracle-core
 
 Install this package together with its peer/runtime requirements.
 
-## Core Interfaces
-
-### Executor
-
-`Executor` defines the common database API:
-
-```ts
-export interface Executor {
-  driver: string
-  param(i: number): string
-  execute(sql: string, args?: any[]): Promise<number>
-  executeBatch(statements: Statement[], requireFirstAffected?: boolean): Promise<number>
-  query<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T[]>
-  queryOne<T>(sql: string, args?: any[], m?: StringMap, bools?: Attribute[]): Promise<T | null>
-  executeScalar<T>(sql: string, args?: any[]): Promise<T | null>
-  count(sql: string, args?: any[]): Promise<number>
-}
-```
-
-### Transaction
-
-```ts
-export interface Transaction extends Executor {
-  commit(): Promise<void>
-  rollback(): Promise<void>
-}
-```
-
-### DB
-
-```ts
-export interface DB extends Executor {
-  beginTransaction(): Promise<Transaction>
-}
-```
-
-## Design Philosophy
-
-The library is intentionally lightweight.
-
-It does not attempt to replace Oracle's native driver APIs. Instead, it provides:
-
-```text
-TypeScript abstraction
-        +
-metadata-driven SQL generation
-        +
-Oracle-specific execution helpers
-        +
-batch/import utilities
-```
-
-Applications can therefore use the high-level helpers for common persistence and import scenarios while retaining access to the native `oracledb` connection and transaction APIs when more advanced Oracle features are required.
-
 ## License
 
 MIT
@@ -1507,30 +1663,6 @@ MIT
 Oracle database infrastructure for TypeScript, built on top of [node-oracledb](https://github.com/oracle/node-oracledb).
 
 `oracle-core` provides a lightweight database abstraction with Oracle-specific SQL builders, transactions, metadata-driven persistence, batch operations, streaming export, and health checking.
-
-## Features
-
-* Simple `DB` / `Transaction` abstraction
-* Oracle connection-pool integration
-* Parameterized SQL execution
-* Query, single-row, scalar, and count operations
-* Explicit transaction support
-* Metadata-driven `insert` and `save` operations
-* Oracle `MERGE` support for save/upsert operations
-* Batch insert and batch save
-* Optimistic version-field support
-* Column/property mapping
-* Boolean value mapping
-* Buffered batch writing
-* Streaming export
-* Oracle health checking
-* Custom bind-parameter builders
-
-## Installation
-
-```bash
-npm install oracle-core oracledb
-```
 
 ## Database abstraction
 
@@ -1546,52 +1678,6 @@ async function findUser(db: DB, id: number) {
   )
 }
 ```
-
-The main interfaces are:
-
-```ts
-interface Executor {
-  driver: string
-  param(i: number): string
-
-  execute(sql: string, args?: any[]): Promise<number>
-
-  executeBatch(
-    statements: Statement[],
-    requireFirstAffected?: boolean,
-  ): Promise<number>
-
-  query<T>(
-    sql: string,
-    args?: any[],
-    map?: StringMap,
-    bools?: Attribute[],
-  ): Promise<T[]>
-
-  queryOne<T>(
-    sql: string,
-    args?: any[],
-    map?: StringMap,
-    bools?: Attribute[],
-  ): Promise<T | null>
-
-  executeScalar<T>(
-    sql: string,
-    args?: any[],
-  ): Promise<T | null>
-
-  count(
-    sql: string,
-    args?: any[],
-  ): Promise<number>
-}
-
-interface DB extends Executor {
-  beginTransaction(): Promise<Transaction>
-}
-```
-
-This keeps application code independent from the Oracle connection-pool implementation.
 
 ## PoolManager
 
@@ -1677,7 +1763,7 @@ console.log(affected)
 
 ## Transactions
 
-Transactions are represented by `OracleTransaction` and implement the common `Transaction` interface.
+Transactions are represented by `ConnectionManager` and implement the common `Transaction` interface.
 
 ```ts
 const tx = await db.beginTransaction()
@@ -1829,57 +1915,6 @@ try {
 } finally {
   await connection.close()
 }
-```
-
-## Primary keys
-
-Mark one or more attributes as keys:
-
-```ts
-const attributes: Attributes = {
-  id: {
-    key: true,
-  },
-}
-```
-
-Multiple key fields are supported:
-
-```ts
-const attributes: Attributes = {
-  tenantId: {
-    key: true,
-    column: "TENANT_ID",
-  },
-  userId: {
-    key: true,
-    column: "USER_ID",
-  },
-}
-```
-
-## Version fields
-
-A field can be marked as a version field:
-
-```ts
-const attributes: Attributes = {
-  id: {
-    key: true,
-  },
-  version: {
-    version: true,
-  },
-  name: {},
-}
-```
-
-For inserts, the version field is initialized to `1`.
-
-For updates generated by `buildToSave()`, the version value is incremented:
-
-```sql
-version = version + 1
 ```
 
 ## Boolean mapping
@@ -2147,7 +2182,7 @@ try {
 
 For pool-based operations, `PoolManager` acquires a connection internally.
 
-For transactions, `OracleTransaction` owns the transaction connection until `commit()` or `rollback()`.
+For transactions, `ConnectionManager` owns the transaction connection until `commit()` or `rollback()`.
 
 ## SQL identifiers
 

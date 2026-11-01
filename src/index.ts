@@ -11,7 +11,7 @@ export * from "./metadata"
 export class resource {
   static string?: boolean
 }
-export class OracleTransaction implements Transaction {
+export class ConnectionManager implements Transaction {
   constructor(protected con: Connection) {
     this.param = this.param.bind(this)
     this.execute = this.execute.bind(this)
@@ -90,7 +90,7 @@ export class PoolManager implements DB {
   }
   async beginTransaction(): Promise<Transaction> {
     const connection = await this.pool.getConnection()
-    const tx = new OracleTransaction(connection)
+    const tx = new ConnectionManager(connection)
     return tx
   }
   driver = "oracle"
