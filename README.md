@@ -946,7 +946,7 @@ const attributes: Attributes = {
 }
 ```
 
-## Version fields
+### Version fields
 
 An attribute can be marked as the version field:
 
@@ -1102,8 +1102,8 @@ The low-level `execute()` helper executes a statement and returns `rowsAffected`
 ```ts
 const rowsAffected = await execute(
   connection,
-  sql,
-  params
+  "update users set status = :1 where id = :2",
+  ["ACTIVE", 100]
 )
 ```
 
@@ -1122,7 +1122,16 @@ For transactional DML, use the Oracle driver/transaction APIs directly or the tr
 ```ts
 const affectedRows = await executeBatch(
   connection,
-  statements
+  [
+    {
+      query: "insert into users(id, name) values (:1, :2)",
+      params: [1, "Alice"]
+    },
+    {
+      query: "insert into users(id, name) values (:1, :2)",
+      params: [2, "Bob"]
+    }
+  ]
 )
 ```
 
